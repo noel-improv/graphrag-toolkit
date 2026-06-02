@@ -13,7 +13,8 @@ import json
 from graphrag_toolkit.byokg_rag.graphstore.neptune import (
     NeptuneAnalyticsGraphStore,
     NeptuneDBGraphStore,
-    BaseNeptuneGraphStore
+    BaseNeptuneGraphStore,
+    _validate_s3_path,
 )
 
 
@@ -1076,8 +1077,211 @@ class TestBaseNeptuneGraphStore:
         )
         
         store._upload_to_s3('s3://test-bucket/test.csv', file_contents='test,data\n1,2')
-        
+
         mock_s3_client.put_object.assert_called_once()
         call_args = mock_s3_client.put_object.call_args[1]
         assert call_args['Bucket'] == 'test-bucket'
         assert call_args['Body'] == 'test,data\n1,2'
+
+
+class TestValidateS3Path:
+    """s3_path must be validated before interpolation into the
+    CALL neptune.load() Cypher string, which does not accept bound parameters."""
+
+    def test_none_is_allowed_through(self):
+        # Existing callers may pass None and rely on later assertions.
+        _validate_s3_path(None)
+
+    def test_accepts_canonical_s3_uri(self):
+        _validate_s3_path('s3://my-bucket/path/to/file.csv')
+
+    def test_rejects_quote_breakout_payload(self):
+        payload = "s3://b/k', region:'x'}) DETACH DELETE n //"
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            _validate_s3_path(payload)
+
+    def test_rejects_missing_scheme(self):
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            _validate_s3_path('my-bucket/key.csv')
+
+    def test_rejects_wrong_scheme(self):
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            _validate_s3_path('https://my-bucket/key.csv')
+
+    def test_rejects_empty_string(self):
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            _validate_s3_path('')
+
+
+class TestReadFromCsvValidatesS3Path:
+    """Both read_from_csv overloads must reject malicious s3_path
+    before any side effect (S3 upload, Cypher execution, loader job)."""
+
+    @patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+    def test_analytics_rejects_injection_before_execute(
+        self, mock_session, mock_neptune_client, mock_s3_client,
+    ):
+        mock_session_instance = Mock()
+        mock_session.return_value = mock_session_instance
+        mock_session_instance.client.side_effect = lambda service, **kwargs: {
+            'neptune-graph': mock_neptune_client,
+            's3': mock_s3_client,
+        }[service]
+
+        store = NeptuneAnalyticsGraphStore(
+            graph_identifier='test-graph-id', region='us-west-2',
+        )
+        payload = "s3://b/k', region:'x'}) DETACH DELETE n //"
+
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            store.read_from_csv(s3_path=payload)
+
+        mock_neptune_client.execute_query.assert_not_called()
+
+    @patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+    def test_db_rejects_injection_before_loader_job(
+        self, mock_session, mock_neptune_data_client, mock_s3_client,
+    ):
+        mock_session_instance = Mock()
+        mock_session.return_value = mock_session_instance
+        mock_session_instance.client.side_effect = lambda service, **kwargs: {
+            'neptunedata': mock_neptune_data_client,
+            's3': mock_s3_client,
+        }[service]
+
+        store = NeptuneDBGraphStore(
+            endpoint_url='https://example.cluster-xyz.us-east-1.neptune.amazonaws.com:8182',
+            region='us-east-1',
+        )
+        payload = "s3://b/k'; DROP DATABASE;"
+
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            store.read_from_csv(s3_path=payload)
+
+        mock_neptune_data_client.start_loader_job.assert_not_called()
+
+
+# Red-state proof: if the validator does not fire, the attacker payload
+# reaches the Cypher string sent to execute_query. Pins the mitigation to
+# the validator and catches a future refactor that drops the call.
+@patch('graphrag_toolkit.byokg_rag.graphstore.neptune._validate_s3_path')
+@patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+def test_payload_reaches_execute_query_when_validator_disabled(
+    mock_session, mock_validator, mock_neptune_client, mock_s3_client,
+):
+    mock_validator.return_value = None
+    mock_session_instance = Mock()
+    mock_session.return_value = mock_session_instance
+    mock_session_instance.client.side_effect = lambda service, **kwargs: {
+        'neptune-graph': mock_neptune_client,
+        's3': mock_s3_client,
+    }[service]
+    mock_neptune_client.execute_query.return_value = {
+        'payload': Mock(read=lambda: json.dumps({'results': []}).encode()),
+    }
+
+    store = NeptuneAnalyticsGraphStore(
+        graph_identifier='test-graph-id', region='us-west-2',
+    )
+    payload = "s3://b/k', region:'x'}) DETACH DELETE n //"
+
+    store.read_from_csv(s3_path=payload)
+
+    sent_query = mock_neptune_client.execute_query.call_args[1]['queryString']
+    assert 'DETACH DELETE n' in sent_query
+
+
+@patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+def test_valid_s3_uri_reaches_execute_query_unchanged(
+    mock_session, mock_neptune_client, mock_s3_client,
+):
+    """The guard must let canonical S3 URIs through to execute_query."""
+    mock_session_instance = Mock()
+    mock_session.return_value = mock_session_instance
+    mock_session_instance.client.side_effect = lambda service, **kwargs: {
+        'neptune-graph': mock_neptune_client,
+        's3': mock_s3_client,
+    }[service]
+    mock_neptune_client.execute_query.return_value = {
+        'payload': Mock(read=lambda: json.dumps({'results': []}).encode()),
+    }
+
+    store = NeptuneAnalyticsGraphStore(
+        graph_identifier='test-graph-id', region='us-west-2',
+    )
+
+    store.read_from_csv(s3_path='s3://my-bucket/path/to/file.csv')
+
+    mock_neptune_client.execute_query.assert_called_once()
+    sent_query = mock_neptune_client.execute_query.call_args[1]['queryString']
+    assert 's3://my-bucket/path/to/file.csv' in sent_query
+
+
+@patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+def test_upload_not_invoked_when_s3_path_is_malicious(
+    mock_session, mock_neptune_client, mock_s3_client,
+):
+    """Validator runs before _upload_to_s3, so an attacker cannot
+    cause a write to an attacker-shaped key by supplying csv_file too."""
+    mock_session_instance = Mock()
+    mock_session.return_value = mock_session_instance
+    mock_session_instance.client.side_effect = lambda service, **kwargs: {
+        'neptune-graph': mock_neptune_client,
+        's3': mock_s3_client,
+    }[service]
+
+    store = NeptuneAnalyticsGraphStore(
+        graph_identifier='test-graph-id', region='us-west-2',
+    )
+
+    with patch.object(store, '_upload_to_s3') as mock_upload:
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            store.read_from_csv(
+                csv_file='/tmp/local.csv',
+                s3_path="s3://b/k', DETACH DELETE n //",
+            )
+        mock_upload.assert_not_called()
+
+    mock_neptune_client.execute_query.assert_not_called()
+
+
+@patch('graphrag_toolkit.byokg_rag.graphstore.neptune.NeptuneAnalyticsGraphStoreIndex')
+@patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+def test_as_embedding_index_rejects_malicious_save_location(
+    mock_session, mock_index_cls, mock_neptune_client, mock_s3_client,
+):
+    """Indirect path through as_embedding_index also hits the guard
+    once it dispatches into read_from_csv."""
+    mock_session_instance = Mock()
+    mock_session.return_value = mock_session_instance
+    mock_session_instance.client.side_effect = lambda service, **kwargs: {
+        'neptune-graph': mock_neptune_client,
+        's3': mock_s3_client,
+    }[service]
+
+    store = NeptuneAnalyticsGraphStore(
+        graph_identifier='test-graph-id', region='us-west-2',
+    )
+
+    with patch.object(store, '_s3_file_exists', return_value=True):
+        with pytest.raises(ValueError, match='Invalid s3_path'):
+            store.as_embedding_index(
+                embedding=Mock(),
+                embedding_s3_save_location="s3://b/k'; DROP",
+            )
+
+    mock_neptune_client.execute_query.assert_not_called()
+
+
+@pytest.mark.parametrize('payload', [
+    pytest.param('s3://bucket/key\x00', id='null-byte'),
+    pytest.param('s3://bucket/key\nDETACH', id='newline-injection'),
+    pytest.param('s3://bucket/key%27', id='url-encoded-quote'),
+    pytest.param('s3://bucket/key’', id='unicode-curly-quote'),
+    pytest.param('s3://bucket/key ', id='trailing-space'),
+    pytest.param('S3://bucket/key', id='uppercase-scheme'),
+])
+def test_validator_rejects_diverse_payloads(payload):
+    """Payload-diversity coverage for the allowlist regex."""
+    with pytest.raises(ValueError, match='Invalid s3_path'):
+        _validate_s3_path(payload)

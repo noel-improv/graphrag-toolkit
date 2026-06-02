@@ -3,6 +3,7 @@
 
 import boto3
 import os
+import re
 from urllib.parse import urlparse
 import json
 import logging
@@ -16,6 +17,20 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 
 logger = logging.getLogger(__name__)
+
+# CALL neptune.load() can't take bound parameters; allowlist s3_path to
+# block Cypher injection.
+_S3_PATH_PATTERN = re.compile(r'^s3://[a-zA-Z0-9.\-_/]+$')
+
+
+def _validate_s3_path(s3_path):
+    if s3_path is None:
+        return
+    if not _S3_PATH_PATTERN.match(s3_path):
+        raise ValueError(
+            f"Invalid s3_path format: '{s3_path}'. "
+            "Must be a valid S3 URI (s3://bucket/key)."
+        )
 
 class BaseNeptuneGraphStore(GraphStore):
     def _upload_to_s3(self, s3_path, local_path=None, file_contents=None):
@@ -265,6 +280,7 @@ class NeptuneAnalyticsGraphStore(BaseNeptuneGraphStore):
         """
 
         assert format in ['NTRIPLES', 'CSV', 'OPEN_CYPHER'], "format must be either 'NTRIPLES' or 'CSV' or 'OPEN_CYPHER'"
+        _validate_s3_path(s3_path)
 
         if csv_file is not None:
             assert s3_path is not None, "s3 path should be passed with local csv path for data import"
@@ -415,6 +431,7 @@ class NeptuneDBGraphStore(BaseNeptuneGraphStore):
         """
 
         assert format in ['CSV', 'OPEN_CYPHER'], "format must be either or 'CSV' or 'OPEN_CYPHER'"
+        _validate_s3_path(s3_path)
 
         if csv_file is not None:
             assert s3_path is not None, "s3 path should be passed with local csv path for data import"
