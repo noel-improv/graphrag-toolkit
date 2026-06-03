@@ -17,6 +17,15 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
+
+# Cypher backtick-quoted identifiers escape an internal backtick by doubling
+# it. Labels read from the graph summary are interpolated into backtick-quoted
+# positions in schema-discovery queries; an attacker-influenced label
+# containing a backtick could otherwise break out and inject Cypher.
+def _escape_cypher_label(label):
+    return label.replace('`', '``')
+
+
 class BaseNeptuneGraphStore(GraphStore):
     def _upload_to_s3(self, s3_path, local_path=None, file_contents=None):
         path = urlparse(s3_path, allow_fragments=False)
@@ -448,8 +457,8 @@ class NeptuneDBGraphStore(BaseNeptuneGraphStore):
         """
         propertyGraphSummary["edgeLabelDetails"] = {}
         for label in propertyGraphSummary["edgeLabels"]:
-            q = edge_properties_query.format(e_label=label)
-            data = {"label": label, "properties": self.execute_query(q)} 
+            q = edge_properties_query.format(e_label=_escape_cypher_label(label))
+            data = {"label": label, "properties": self.execute_query(q)}
             prop_types = {}
             for p in data["properties"]:
                 from typing import cast
@@ -478,7 +487,7 @@ class NeptuneDBGraphStore(BaseNeptuneGraphStore):
         n_labels = propertyGraphSummary["nodeLabels"]
         propertyGraphSummary["nodeLabelDetails"] = {}
         for label in n_labels:
-            q = node_properties_query.format(n_label=label)
+            q = node_properties_query.format(n_label=_escape_cypher_label(label))
             data = {"label": label, "properties": self.execute_query(q)}
             prop_types = {}
             for p in data["properties"]:
@@ -505,8 +514,8 @@ class NeptuneDBGraphStore(BaseNeptuneGraphStore):
         """
         triple_template = "(:`{a}`)-[:`{e}`]->(:`{b}`)"
         triple_schema = []
-        for label in propertyGraphSummary["edgeLabels"]:     
-            q = triple_query.format(e_label=label)
+        for label in propertyGraphSummary["edgeLabels"]:
+            q = triple_query.format(e_label=_escape_cypher_label(label))
             data = self.execute_query(q)
             for d in data:         
                 triple = {}
