@@ -1125,7 +1125,6 @@ def _captured_queries(mock_client):
 # keeps the escape signature ("evil``") distinct from the raw breakout
 # ("evil`") even after the surrounding template backticks concatenate.
 _BREAKOUT_LABEL = 'evil`) MATCH (x) DETACH DELETE x //'
-_BREAKOUT_LABEL_ESCAPED = 'evil``) MATCH (x) DETACH DELETE x //'
 _RAW_BREAKOUT_FRAGMENT = 'evil`) MATCH'
 _ESCAPED_BREAKOUT_FRAGMENT = 'evil``) MATCH'
 
