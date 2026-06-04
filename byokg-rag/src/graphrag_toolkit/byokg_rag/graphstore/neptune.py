@@ -18,11 +18,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 logger = logging.getLogger(__name__)
 
 
-# Cypher backtick-quoted identifiers escape an internal backtick by doubling
-# it. Labels read from the graph summary are interpolated into backtick-quoted
-# positions in schema-discovery queries; an attacker-influenced label
-# containing a backtick could otherwise break out and inject Cypher.
+# Escape backticks before a label is interpolated into a backtick-quoted Cypher
+# identifier. Doubling is Cypher's escape rule; without it a label containing a
+# backtick could break out of the identifier and inject Cypher.
 def _escape_cypher_label(label):
+    if not isinstance(label, str):
+        raise TypeError(
+            f'Cypher label must be a string, got {type(label).__name__}'
+        )
     return label.replace('`', '``')
 
 
@@ -91,7 +94,7 @@ class BaseNeptuneGraphStore(GraphStore):
             '''
         else:
             query = f'''
-                    MATCH (n:`{node_type}`)
+                    MATCH (n:`{_escape_cypher_label(node_type)}`)
                     '''
         if self.node_type_to_property_mapping:
             query += '''
@@ -370,7 +373,7 @@ class NeptuneAnalyticsGraphStore(BaseNeptuneGraphStore):
         ids, texts_to_embed = ({}, {}) if group_by_node_label else ([], [])
         for node_type, node_properties in node_embedding_text_props.items():
             gather_nodes_query = f'''
-                                MATCH (n:`{node_type}`)
+                                MATCH (n:`{_escape_cypher_label(node_type)}`)
                                 RETURN properties(n) as properties, ID(n) as node
                                 '''
             response = self.execute_query(gather_nodes_query)
@@ -512,7 +515,6 @@ class NeptuneDBGraphStore(BaseNeptuneGraphStore):
         RETURN DISTINCT labels(a) AS from, type(e) AS edge, labels(b) AS to
         LIMIT 10
         """
-        triple_template = "(:`{a}`)-[:`{e}`]->(:`{b}`)"
         triple_schema = []
         for label in propertyGraphSummary["edgeLabels"]:
             q = triple_query.format(e_label=_escape_cypher_label(label))

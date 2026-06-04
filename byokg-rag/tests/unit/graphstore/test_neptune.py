@@ -1084,12 +1084,6 @@ class TestBaseNeptuneGraphStore:
         assert call_args['Body'] == 'test,data\n1,2'
 
 
-# Labels read from the property graph summary are interpolated into
-# backtick-quoted positions in schema-discovery Cypher. A label containing a
-# backtick would otherwise break out of the identifier and inject Cypher.
-# Cypher's escape rule for backtick-quoted identifiers is to double the
-# backtick.
-
 class TestEscapeCypherLabel:
     """Unit tests for the label-escaping helper."""
 
@@ -1098,6 +1092,16 @@ class TestEscapeCypherLabel:
 
     def test_empty_string_unchanged(self):
         assert _escape_cypher_label('') == ''
+
+    @pytest.mark.parametrize('bad', [
+        pytest.param(None, id='none'),
+        pytest.param(123, id='int'),
+        pytest.param(b'Person', id='bytes'),
+        pytest.param(['Person'], id='list'),
+    ])
+    def test_non_string_raises_type_error(self, bad):
+        with pytest.raises(TypeError):
+            _escape_cypher_label(bad)
 
     @pytest.mark.parametrize('raw,escaped', [
         pytest.param('a`b', 'a``b', id='backtick-in-middle'),
@@ -1120,10 +1124,9 @@ def _captured_queries(mock_client):
     ]
 
 
-# Payload chosen to break out of backtick-quoted label position and append a
-# destructive clause if the escape helper does not fire. The prefix "evil"
-# keeps the escape signature ("evil``") distinct from the raw breakout
-# ("evil`") even after the surrounding template backticks concatenate.
+# Breakout payload: closes the backtick-quoted label and appends a destructive
+# clause if the escape does not fire. The "evil" prefix keeps the escaped
+# signature ("evil``") distinct from the raw one ("evil`") in assertions.
 _BREAKOUT_LABEL = 'evil`) MATCH (x) DETACH DELETE x //'
 _RAW_BREAKOUT_FRAGMENT = 'evil`) MATCH'
 _ESCAPED_BREAKOUT_FRAGMENT = 'evil``) MATCH'
@@ -1142,8 +1145,8 @@ class TestSchemaDiscoveryEscapesLabels:
             's3': mock_s3_client,
         }[service]
         return NeptuneDBGraphStore(
-            endpoint_url='https://example.us-east-1.neptune.amazonaws.com:8182',
-            region='us-east-1',
+            endpoint_url='https://test-cluster.us-west-2.neptune.amazonaws.com:8182',
+            region='us-west-2',
         )
 
     def test_get_edge_properties_escapes_backtick(
@@ -1164,7 +1167,7 @@ class TestSchemaDiscoveryEscapesLabels:
         assert len(sent) == 1
         assert _ESCAPED_BREAKOUT_FRAGMENT in sent[0]
         assert _RAW_BREAKOUT_FRAGMENT not in sent[0]
-        # Raw label is preserved in the Python-side dict key, not the cypher.
+        # Raw label is kept as the dict key, not in the cypher.
         assert _BREAKOUT_LABEL in summary['edgeLabelDetails']
 
     def test_get_node_properties_escapes_backtick(
@@ -1254,8 +1257,8 @@ class TestSchemaDiscoveryIndirectCaller:
         }
 
         store = NeptuneDBGraphStore(
-            endpoint_url='https://example.us-east-1.neptune.amazonaws.com:8182',
-            region='us-east-1',
+            endpoint_url='https://test-cluster.us-west-2.neptune.amazonaws.com:8182',
+            region='us-west-2',
         )
 
         store.get_schema()
@@ -1268,36 +1271,172 @@ class TestSchemaDiscoveryIndirectCaller:
             assert _RAW_BREAKOUT_FRAGMENT not in cypher
 
 
-# Red-state proof: with the escape helper patched to identity, the breakout
-# payload reaches execute_open_cypher_query unescaped. Pins the mitigation
-# to the helper and catches a future refactor that drops the call.
-@patch(
-    'graphrag_toolkit.byokg_rag.graphstore.neptune._escape_cypher_label',
-    side_effect=lambda label: label,
-)
-@patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
-def test_payload_reaches_cypher_when_escape_disabled(
-    mock_session, mock_escape, mock_neptune_data_client, mock_s3_client,
-):
-    mock_session_instance = Mock()
-    mock_session.return_value = mock_session_instance
-    mock_session_instance.client.side_effect = lambda service, **kwargs: {
-        'neptunedata': mock_neptune_data_client,
-        's3': mock_s3_client,
-    }[service]
-    mock_neptune_data_client.execute_open_cypher_query.return_value = {
-        'results': [],
-    }
+class TestSchemaDiscoveryRedState:
+    """Red-state proof: with the escape helper patched to identity, the
+    breakout payload reaches execute_open_cypher_query unescaped. Pins the
+    mitigation to the helper and catches a future refactor that drops the
+    call."""
 
-    store = NeptuneDBGraphStore(
-        endpoint_url='https://example.us-east-1.neptune.amazonaws.com:8182',
-        region='us-east-1',
+    @patch(
+        'graphrag_toolkit.byokg_rag.graphstore.neptune._escape_cypher_label',
+        side_effect=lambda label: label,
     )
-    summary = {'edgeLabels': [_BREAKOUT_LABEL]}
+    @patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+    def test_payload_reaches_cypher_when_escape_disabled(
+        self, mock_session, mock_escape, mock_neptune_data_client, mock_s3_client,
+    ):
+        mock_session_instance = Mock()
+        mock_session.return_value = mock_session_instance
+        mock_session_instance.client.side_effect = lambda service, **kwargs: {
+            'neptunedata': mock_neptune_data_client,
+            's3': mock_s3_client,
+        }[service]
+        mock_neptune_data_client.execute_open_cypher_query.return_value = {
+            'results': [],
+        }
 
-    store._get_edge_properties(summary, {'str': 'STRING'})
+        store = NeptuneDBGraphStore(
+            endpoint_url='https://test-cluster.us-west-2.neptune.amazonaws.com:8182',
+            region='us-west-2',
+        )
+        summary = {'edgeLabels': [_BREAKOUT_LABEL]}
 
-    sent = _captured_queries(mock_neptune_data_client)
-    assert _RAW_BREAKOUT_FRAGMENT in sent[0]
-    assert _ESCAPED_BREAKOUT_FRAGMENT not in sent[0]
-    assert 'DETACH DELETE x' in sent[0]
+        store._get_edge_properties(summary, {'str': 'STRING'})
+
+        sent = _captured_queries(mock_neptune_data_client)
+        assert _RAW_BREAKOUT_FRAGMENT in sent[0]
+        assert _ESCAPED_BREAKOUT_FRAGMENT not in sent[0]
+        assert 'DETACH DELETE x' in sent[0]
+
+
+def _captured_analytics_queries(mock_client):
+    """Return every cypher string passed to the neptune-graph execute_query."""
+    return [
+        call.kwargs.get('queryString') or call.args[0]
+        for call in mock_client.execute_query.call_args_list
+    ]
+
+
+class TestAnalyticsLabelSinksEscapeBacktick:
+    """nodes() and get_node_text_for_embedding_input() also interpolate a
+    label into a backtick-quoted identifier. Both must escape it."""
+
+    @patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session')
+    def _store(self, mock_session, mock_neptune_client, mock_s3_client):
+        mock_session_instance = Mock()
+        mock_session.return_value = mock_session_instance
+        mock_session_instance.client.side_effect = lambda service, **kwargs: {
+            'neptune-graph': mock_neptune_client,
+            's3': mock_s3_client,
+        }[service]
+        return NeptuneAnalyticsGraphStore(
+            graph_identifier='test-graph-id',
+            region='us-west-2',
+        )
+
+    def test_nodes_escapes_backtick_in_node_type(
+        self, mock_neptune_client, mock_s3_client,
+    ):
+        mock_neptune_client.execute_query.return_value = {
+            'payload': Mock(read=lambda: json.dumps({'results': []}).encode()),
+        }
+        store = self._store(
+            mock_neptune_client=mock_neptune_client,
+            mock_s3_client=mock_s3_client,
+        )
+
+        store.nodes(node_type=_BREAKOUT_LABEL)
+
+        sent = _captured_analytics_queries(mock_neptune_client)
+        assert _ESCAPED_BREAKOUT_FRAGMENT in sent[0]
+        assert _RAW_BREAKOUT_FRAGMENT not in sent[0]
+
+    def test_get_node_text_for_embedding_escapes_backtick(
+        self, mock_neptune_client, mock_s3_client,
+    ):
+        mock_neptune_client.execute_query.return_value = {
+            'payload': Mock(read=lambda: json.dumps({'results': []}).encode()),
+        }
+        store = self._store(
+            mock_neptune_client=mock_neptune_client,
+            mock_s3_client=mock_s3_client,
+        )
+
+        ids, _ = store.get_node_text_for_embedding_input(
+            node_embedding_text_props={_BREAKOUT_LABEL: ['name']},
+            group_by_node_label=True,
+        )
+
+        sent = _captured_analytics_queries(mock_neptune_client)
+        assert _ESCAPED_BREAKOUT_FRAGMENT in sent[0]
+        assert _RAW_BREAKOUT_FRAGMENT not in sent[0]
+        # Raw label is kept as the dict key, not in the cypher.
+        assert _BREAKOUT_LABEL in ids
+
+    def test_nodes_plain_label_flows_unchanged(
+        self, mock_neptune_client, mock_s3_client,
+    ):
+        """Positive path: a canonical node_type reaches the cypher in
+        backtick-quoted form without modification."""
+        mock_neptune_client.execute_query.return_value = {
+            'payload': Mock(read=lambda: json.dumps({'results': []}).encode()),
+        }
+        store = self._store(
+            mock_neptune_client=mock_neptune_client,
+            mock_s3_client=mock_s3_client,
+        )
+
+        store.nodes(node_type='Person')
+
+        sent = _captured_analytics_queries(mock_neptune_client)
+        assert '`Person`' in sent[0]
+
+
+class TestNoUnescapedLabelSinks:
+    """Regression guard: every value interpolated into a backtick-quoted
+    identifier in neptune.py must route through _escape_cypher_label, inline in
+    an f-string or bound at a .format() call. A new unescaped sink fails CI.
+
+    Heuristic and line-based: the .format() check matches the placeholder name
+    against any binding in the file, so the per-sink behavioral tests above
+    remain the authoritative coverage."""
+
+    def test_every_backtick_label_sink_is_escaped(self):
+        import inspect
+        import re as _re
+        from graphrag_toolkit.byokg_rag.graphstore import neptune
+
+        source = inspect.getsource(neptune)
+        # A value interpolated inside a single backtick-quoted span:
+        #   `{expr}`  (f-string)  or  `{name}`  (.format placeholder)
+        sink_re = _re.compile(r'`[^`\n]*\{([^{}]+)\}[^`\n]*`')
+
+        offenders = []
+        sinks_seen = 0
+        for lineno, line in enumerate(source.splitlines(), 1):
+            if line.lstrip().startswith('#'):
+                continue
+            for match in sink_re.finditer(line):
+                sinks_seen += 1
+                inner = match.group(1).strip()
+                # f-string sink: helper applied inline.
+                if '_escape_cypher_label' in inner:
+                    continue
+                # .format placeholder: helper applied at the binding site,
+                # e.g. .format(e_label=_escape_cypher_label(label)).
+                bind_re = _re.compile(
+                    _re.escape(inner) + r'\s*=\s*_escape_cypher_label'
+                )
+                if bind_re.search(source):
+                    continue
+                offenders.append(f'{lineno}: {line.strip()}')
+
+        # Guard against a vacuous pass: the regex must still be finding sinks.
+        assert sinks_seen >= 5, (
+            f'Expected to find the known backtick-label sinks, saw '
+            f'{sinks_seen}. The sink regex may be stale.'
+        )
+        assert not offenders, (
+            'Value interpolated into a backtick-quoted identifier without '
+            '_escape_cypher_label:\n' + '\n'.join(offenders)
+        )
