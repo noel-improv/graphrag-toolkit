@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # CALL neptune.load() can't take bound parameters; allowlist s3_path to
 # block Cypher injection.
-_S3_PATH_PATTERN = re.compile(r'^s3://[a-zA-Z0-9.\-_/]+$')
+_S3_PATH_PATTERN = re.compile(r'^s3://[a-zA-Z0-9.\-_/+=!@()*]+$')
 
 
 def _validate_s3_path(s3_path):

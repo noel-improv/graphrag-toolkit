@@ -1095,6 +1095,19 @@ class TestValidateS3Path:
     def test_accepts_canonical_s3_uri(self):
         _validate_s3_path('s3://my-bucket/path/to/file.csv')
 
+    @pytest.mark.parametrize('path', [
+        pytest.param('s3://my-bucket/year=2024/month=01/data.csv',
+                     id='hive-partition'),
+        pytest.param('s3://my-bucket/path/file+name.csv',
+                     id='plus-in-filename'),
+        pytest.param('s3://my-bucket/data!@()*.csv',
+                     id='other-valid-key-chars'),
+    ])
+    def test_accepts_valid_s3_key_characters(self, path):
+        # =, +, !, @, (, ), * are valid S3 key characters and cannot break out
+        # of a single-quoted Cypher literal, so they must not be rejected.
+        _validate_s3_path(path)
+
     def test_rejects_quote_breakout_payload(self):
         payload = "s3://b/k', region:'x'}) DETACH DELETE n //"
         with pytest.raises(ValueError, match='Invalid s3_path'):
