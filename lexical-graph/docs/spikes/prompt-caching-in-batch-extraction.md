@@ -1,7 +1,7 @@
 # Spike: Prompt caching in Bedrock batch extraction
 
-Status: documentation finding confirmed against authoritative AWS sources; an empirical
-confirmation run is planned (see Verification status) before this is treated as closed.
+Status: confirmed — documentation finding and an empirical run both agree (see Verification
+status). Closed.
 Scope: batch extraction API only (non-batch/on-demand extraction is out of scope)
 Reference: https://github.com/awslabs/graphrag-toolkit/issues/326 (DRAFT)
 
@@ -20,13 +20,14 @@ which this ticket explicitly excludes.
 
 The finding above rests on authoritative AWS documentation (the prompt-caching user guide,
 the batch-inference limitations page, and the `CreateModelInvocationJob` API reference),
-cross-checked across two independent searches. It is documentation-confirmed, not yet
-empirically confirmed.
+cross-checked across two independent searches. It is now also empirically confirmed — see
+"Empirical confirmation" below.
 
-An empirical confirmation run is planned to close the loop concretely — see "Planned
-empirical confirmation" below. Until that runs, this document does not assert any measured
-numbers. Earlier draft token estimates have been removed; exact counts will be measured with
-`count_tokens`.
+The empirical result is stronger than the docs imply. Batch inference does not merely ignore
+a `cache_control` marker; it hard-rejects every record that carries one with an
+`errorCode 400`. The identical request body caches normally on the on-demand path, isolating
+the batch API as the sole cause. Earlier draft token estimates have been removed; this
+document asserts only measured numbers.
 
 ## What was investigated
 
@@ -80,7 +81,8 @@ entry on the first request and serves reads from it within an ephemeral TTL (5 m
 most models, 1 hour for a few Claude models). Batch inference is asynchronous and
 S3-mediated: records are processed by Bedrock's batch fleet with no ordering or temporal
 guarantee, and the batch JSONL `modelInput` schema has no field for a cache checkpoint. A
-`cache_control` block placed inside a batch record's `modelInput` is not honored.
+`cache_control` block placed inside a batch record's `modelInput` is not honored — in
+practice the batch API rejects the record outright (see Empirical confirmation).
 
 A related note in the same AWS doc says the 1-hour TTL "is useful for ... batch processing
 scenarios." That refers to client-side batching of on-demand calls over time (many
@@ -111,7 +113,10 @@ Two factors decide whether caching pays off on the on-demand path:
 1. **The static prefix must clear the per-model minimum token count for a cache checkpoint.**
    Per the AWS table, Claude Sonnet 4.6 and Claude 3.7 Sonnet require 1,024 tokens per
    checkpoint; Claude Opus 4.5/4.6, Sonnet 4.5, and Haiku 4.5 require 4,096. Below the
-   minimum, inference still succeeds but nothing is cached.
+   minimum, inference still succeeds but nothing is cached. (Measured caveat: on
+   `us.anthropic.claude-sonnet-4-6` the effective minimum behaved like ~4,096, not the listed
+   1,024 — a ~1,400-token prefix did not cache. Size against the measured floor, not the
+   table.)
 
 2. **The static prefix must be reused often enough to stay within the TTL** (5 minutes
    default; 1 hour on Opus 4.5 / Sonnet 4.5 / Haiku 4.5). Extraction over a large dataset
@@ -138,26 +143,32 @@ What still needs measuring (deferred to the on-demand evaluation, not estimated 
 The benchmark suite runs extraction on `us.anthropic.claude-sonnet-4-6`
 (`integration-tests/.../benchmark_extract.py`).
 
-## Planned empirical confirmation
+## Empirical confirmation
 
-A two-arm test confirms the documented finding concretely. The on-demand arm is the positive
-control that makes the batch arm's negative result meaningful — it rules out "the checkpoint
-was placed wrong" as the reason for a zero cache read.
+A two-arm test confirmed the finding concretely on `us.anthropic.claude-sonnet-4-6` in
+`us-west-2`. The on-demand arm is the positive control that makes the batch arm's result
+meaningful — it rules out "the checkpoint was placed wrong" as the reason caching did not
+apply in batch.
 
-- **Arm A — on-demand (positive control).** Call `Converse`/`InvokeModel` twice within the
-  TTL with the same large cached prefix and a `cachePoint`/`cache_control` marker. Expect
-  `cacheReadInputTokens > 0` on the second call. Proves caching works and the prefix
-  placement is valid. This also yields the real `count_tokens` figures for the sizing above.
-- **Arm B — batch (the actual question).** Submit a small batch job (Bedrock minimum 100
-  records), every record sharing the identical cached prefix with a varying suffix and a
-  `cache_control` marker in `modelInput`. Inspect each record's `modelOutput.usage` for
-  `cacheReadInputTokens`/`cacheWriteInputTokens`. Expectation, per the docs: absent or zero
-  across all records, confirming the batch path ignores the cache directive.
+- **Arm A — on-demand (positive control). PASS.** Two runs. A `Converse` call with a
+  `cachePoint` after a repeated large prefix returned `cacheWriteInputTokens` then
+  `cacheReadInputTokens` on the second call. An `InvokeModel` call using the exact body shape
+  a batch record carries (`cache_control: {type: ephemeral}` on the first content block)
+  returned `cache_creation_input_tokens` then `cache_read_input_tokens` ≈ 4,240 on the repeat.
+  Caching works and the marker placement is valid. (Practical note: the effective checkpoint
+  minimum observed for Sonnet 4.6 was ~4,096 tokens, not the 1,024 the table lists — a
+  ~1,400-token prefix did not cache; tripling it to ~4,240 did.)
+- **Arm B — batch (the actual question). CONFIRMED NEGATIVE.** A 100-record batch job
+  (Bedrock minimum), every record carrying the identical cached prefix and the same
+  `cache_control` marker that cached in Arm A. Result: `successRecordCount: 0`,
+  `errorRecordCount: 100`. Every record failed with the same error:
 
-Prerequisites: AWS credentials, an S3 bucket and a batch IAM role (the integration-test
-environment already provides `BATCH_INFERENCE_ROLE` and `S3_RESULTS_BUCKET`), and a model
-whose minimum the prefix can clear so caching could activate if it were supported. Cost is
-small (~100 short records) but non-zero; batch wall time runs from minutes to hours.
+  > errorCode 400 (retryable: false): "You invoked an unsupported model or your request did
+  > not allow prompt caching. See the documentation for more information."
+
+The batch path does not silently drop the cache directive — it rejects the request outright.
+Since the same body cached on-demand (Arm A), the batch API is the sole cause. Cost was small
+(~100 short records, all errored before generation).
 
 ## Incidental observation (not part of this spike)
 
