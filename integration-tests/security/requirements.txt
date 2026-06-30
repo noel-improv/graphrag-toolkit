@@ -1,0 +1,5 @@
+pytest
+numpy
+psycopg2-binary
+pgvector
+neo4j
