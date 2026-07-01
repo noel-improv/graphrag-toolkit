@@ -41,6 +41,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: integration-tests/security/requirements.txt
       - name: Install package and suite
         run: |
           python -m pip install --upgrade pip
@@ -60,17 +62,19 @@ jobs:
           NEO4J_AUTH: neo4j/testpassword123
         ports:
           - 7687:7687
-          - 7474:7474
         options: >-
-          --health-cmd "wget -q -O /dev/null http://localhost:7474 || exit 1"
+          --health-cmd "cypher-shell -u neo4j -p testpassword123 'RETURN 1' || exit 1"
           --health-interval 10s
-          --health-timeout 5s
+          --health-timeout 10s
           --health-retries 20
+          --health-start-period 30s
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: integration-tests/security/requirements.txt
       - name: Install packages and suite
         run: |
           python -m pip install --upgrade pip

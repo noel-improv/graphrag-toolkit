@@ -3,44 +3,45 @@
 
 """Shared fixtures for the security integration suite.
 
-Each backend is gated on an environment variable so the suite skips cleanly
-when no live engine is available (local dev without containers) and runs in CI
-against service containers. See README.md.
+Each backend is gated on an environment variable so the suite skips when no live
+engine is available and runs in CI against service containers. See README.md.
 """
 
 import os
+import time
 import pytest
 
 
 def _pg_kwargs():
+    """Parse PGVECTOR_TEST_DSN into psycopg2 connect kwargs, or None when unset."""
     dsn = os.environ.get('PGVECTOR_TEST_DSN')
     if not dsn:
         return None
-    out = {}
-    for part in dsn.split():
-        key, value = part.split('=', 1)
-        out[key] = int(value) if key == 'port' else value
-    return out
+    import psycopg2.extensions
+    kwargs = psycopg2.extensions.parse_dsn(dsn)
+    if 'port' in kwargs:
+        kwargs['port'] = int(kwargs['port'])
+    return kwargs
 
 
 @pytest.fixture(scope='session')
 def pg_kwargs():
-    """psycopg2 connection kwargs for the live Postgres+pgvector engine."""
-    kw = _pg_kwargs()
-    if kw is None:
+    """psycopg2 connect kwargs for the live Postgres+pgvector engine."""
+    kwargs = _pg_kwargs()
+    if kwargs is None:
         pytest.skip('PGVECTOR_TEST_DSN not set')
-    return kw
+    return kwargs
 
 
 @pytest.fixture(scope='session', autouse=True)
 def _pg_extension_and_schema():
     """Ensure the pgvector extension and graphrag schema exist before any test
-    that uses the Postgres backend. No-op when the backend is not configured."""
-    kw = _pg_kwargs()
-    if kw is None:
+    that uses the Postgres backend. A no-op when the backend is not configured."""
+    kwargs = _pg_kwargs()
+    if kwargs is None:
         return
     import psycopg2
-    conn = psycopg2.connect(**kw)
+    conn = psycopg2.connect(**kwargs)
     conn.set_session(autocommit=True)
     cur = conn.cursor()
     cur.execute('CREATE EXTENSION IF NOT EXISTS vector;')
@@ -49,9 +50,13 @@ def _pg_extension_and_schema():
     conn.close()
 
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def neo4j_driver():
-    """A connected neo4j driver for the live openCypher engine."""
+    """A connected neo4j driver for the live openCypher engine.
+
+    Retries verify_connectivity because a service container can report healthy
+    over HTTP before Bolt accepts authenticated connections.
+    """
     uri = os.environ.get('NEO4J_TEST_URI')
     if not uri:
         pytest.skip('NEO4J_TEST_URI not set')
@@ -59,6 +64,16 @@ def neo4j_driver():
     user = os.environ.get('NEO4J_TEST_USER', 'neo4j')
     password = os.environ.get('NEO4J_TEST_PASSWORD', 'testpassword123')
     driver = GraphDatabase.driver(uri, auth=(user, password))
-    driver.verify_connectivity()
+    last_error = None
+    for _ in range(30):
+        try:
+            driver.verify_connectivity()
+            break
+        except Exception as error:
+            last_error = error
+            time.sleep(2)
+    else:
+        driver.close()
+        raise last_error
     yield driver
     driver.close()

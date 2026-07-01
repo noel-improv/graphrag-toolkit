@@ -3,45 +3,78 @@
 
 """Security integration test: property-name injection in the byokg-rag Neptune store.
 
-Builds the property fragment with the real _escape_cypher_label helper and runs
-it against a live openCypher engine: a backtick-quoted property is treated as a
-literal key, an injection-laden name is inert, and the pre-fix raw interpolation
-raises a syntax error on the engine.
+Drives the real get_nodes / get_one_hop_edges sinks (with a query-capturing
+client) and runs the OpenCypher they emit against a live openCypher engine, so a
+regression that reverts a sink to raw n.{prop} interpolation is caught here. A
+legitimate property resolves, an injection-laden name is inert, and the pre-fix
+raw interpolation raises a syntax error on the engine.
 
 Backend: NEO4J_TEST_URI (see conftest.py). Skips when unset.
+
+The byokg store is imported inside the helpers, so a failure to import its ML
+dependencies fails this module rather than aborting collection for the job.
 """
 
+import json
 import pytest
-from neo4j.exceptions import CypherSyntaxError
-from graphrag_toolkit.byokg_rag.graphstore.neptune import _escape_cypher_label
+from unittest.mock import Mock, patch
+
+
+def _emit(prop, method, node_ids):
+    """Return the OpenCypher and parameters the real sink emits for a property."""
+    from graphrag_toolkit.byokg_rag.graphstore.neptune import NeptuneAnalyticsGraphStore
+    captured = {}
+
+    def capture(**kwargs):
+        captured.update(kwargs)
+        return {'payload': Mock(read=lambda: json.dumps({'results': []}).encode())}
+
+    with patch('graphrag_toolkit.byokg_rag.graphstore.neptune.boto3.Session') as mock_session:
+        neptune_client = Mock()
+        neptune_client.get_graph.return_value = {'id': 'test-graph-id', 'status': 'AVAILABLE'}
+        neptune_client.execute_query.side_effect = capture
+        session = Mock()
+        mock_session.return_value = session
+        session.client.side_effect = lambda service, **kw: (
+            neptune_client if service == 'neptune-graph' else Mock()
+        )
+        store = NeptuneAnalyticsGraphStore(graph_identifier='test-graph-id', region='us-west-2')
+        store.node_type_to_property_mapping = {'N': prop}
+        getattr(store, method)(node_ids)
+
+    return captured['queryString'], captured['parameters']
+
+
+def _run(neo4j_driver, query, parameters):
+    with neo4j_driver.session() as session:
+        return list(session.run(query, **parameters))
 
 
 @pytest.fixture(autouse=True)
 def _seed(neo4j_driver):
-    with neo4j_driver.session() as s:
-        s.run('MATCH (n) DETACH DELETE n')
-        s.run("CREATE (:N {name:'keep'})")
-
-
-def _run_fixed(neo4j_driver, prop):
-    fragment = f"n.`{_escape_cypher_label(prop)}`"
-    query = f'MATCH (n:N) WHERE {fragment} IN $ids RETURN n.name AS name'
-    with neo4j_driver.session() as s:
-        return [r['name'] for r in s.run(query, ids=['keep'])]
+    with neo4j_driver.session() as session:
+        session.run('MATCH (n) DETACH DELETE n')
+        session.run("CREATE (:N {name:'keep'})")
 
 
 def test_legit_property_resolves(neo4j_driver):
-    assert _run_fixed(neo4j_driver, 'name') == ['keep']
+    query, parameters = _emit('name', 'get_nodes', ['keep'])
+    rows = _run(neo4j_driver, query, parameters)
+    assert len(rows) == 1
+    assert rows[0]['properties']['name'] == 'keep'
 
 
-def test_injected_property_name_is_inert(neo4j_driver):
-    assert _run_fixed(neo4j_driver, 'a`b') == []
-    assert _run_fixed(neo4j_driver, "x` OR n.secret=1 OR `") == []
+@pytest.mark.parametrize('method', ['get_nodes', 'get_one_hop_edges'])
+def test_injected_property_name_is_inert(neo4j_driver, method):
+    # A raw n.{prop} regression would emit invalid Cypher and raise here.
+    query, parameters = _emit('a`b', method, ['keep'])
+    assert _run(neo4j_driver, query, parameters) == []
 
 
-def test_pre_fix_pattern_would_break_out(neo4j_driver):
+def test_pre_fix_raw_interpolation_would_break_out(neo4j_driver):
     """Red-state: the old raw property interpolation breaks the query on the engine."""
+    from neo4j.exceptions import CypherSyntaxError
     query = 'MATCH (n:N) WHERE n.a`b IN $ids RETURN n.name AS name'
-    with neo4j_driver.session() as s:
+    with neo4j_driver.session() as session:
         with pytest.raises(CypherSyntaxError):
-            list(s.run(query, ids=['keep']))
+            list(session.run(query, ids=['keep']))
