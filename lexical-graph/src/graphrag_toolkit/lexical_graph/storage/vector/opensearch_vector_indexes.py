@@ -11,6 +11,8 @@ from typing import List, Any, Optional, Iterable, Dict, Tuple
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from botocore.config import Config
+
 from llama_index.core.bridge.pydantic import PrivateAttr, ConfigDict
 from llama_index.core.schema import BaseNode, NodeWithScore, QueryBundle
 from llama_index.core.vector_stores.types import  VectorStoreQueryResult, VectorStoreQueryMode, MetadataFilters, MetadataFilter
@@ -407,7 +409,18 @@ def _try_create_index(client, index_name, dimensions, writeable, endpoint, nextg
         return False
 
 
-_AOSS_HOST_RE = re.compile(r'^([^.]+)\.([^.]+)\.aoss\.amazonaws\.com$')
+_AOSS_HOST_RE = re.compile(r'^([^.]+)\.([^.]+)\.aoss\.amazonaws\.com(?:\.cn)?$')
+
+# Bound the control-plane probe so a deployment that reaches the AOSS data plane but not the
+# opensearchserverless control-plane API 
+# fails fast into the reactive fallback instead of blocking on botocore's default ~60s connect
+# timeout once per index. See #399.
+_AOSS_CONTROL_PLANE_CONFIG = Config(connect_timeout=2, read_timeout=5, retries={'max_attempts': 2})
+
+# A collection's generation is invariant, so memoize it per (collection_id, region) to avoid
+# re-issuing the two control-plane calls for every index against the same collection. Only successful resolutions are
+# cached; a transient failure raises, returns None, and is left uncached so the next index retries.
+_aoss_generation_cache: Dict[Tuple[str, str], Optional['OpenSearchServerlessGeneration']] = {}
 
 
 def _parse_aoss_collection(endpoint: str) -> Optional[Tuple[str, str]]:
@@ -431,8 +444,10 @@ def _resolve_aoss_generation(endpoint: str) -> Optional['OpenSearchServerlessGen
     if parsed is None:
         return None
     collection_id, region = parsed
+    if parsed in _aoss_generation_cache:
+        return _aoss_generation_cache[parsed]
     try:
-        client = GraphRAGConfig.session.client('opensearchserverless', region_name=region)
+        client = GraphRAGConfig.session.client('opensearchserverless', region_name=region, config=_AOSS_CONTROL_PLANE_CONFIG)
         details = client.batch_get_collection(ids=[collection_id]).get('collectionDetails') or []
         if not details:
             return None
@@ -441,7 +456,9 @@ def _resolve_aoss_generation(endpoint: str) -> Optional['OpenSearchServerlessGen
             return None
         groups = client.batch_get_collection_group(names=[group_name]).get('collectionGroupDetails') or []
         generation = groups[0].get('generation') if groups else None
-        return OpenSearchServerlessGeneration.parse(generation)
+        result = OpenSearchServerlessGeneration.parse(generation)
+        _aoss_generation_cache[parsed] = result
+        return result
     except Exception as e:
         logger.debug(f'AOSS generation detection unavailable, falling back to reactive detection [endpoint: {endpoint}, error: {e}]')
         return None

@@ -16,6 +16,7 @@ reactive Classic/NextGen retry when detection is unavailable. Covers:
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from botocore.exceptions import ClientError
 
 from ._opensearch_test_support import install_opensearch_mocks, FakeRequestError as _RequestError
@@ -27,6 +28,14 @@ from graphrag_toolkit.lexical_graph.config import OpenSearchServerlessGeneration
 
 
 _AOSS_ENDPOINT = "https://abc123xyz.us-east-1.aoss.amazonaws.com"
+
+
+@pytest.fixture(autouse=True)
+def _clear_generation_cache():
+    """Detection memoizes per (collection_id, region); clear it so tests stay isolated."""
+    ovi._aoss_generation_cache.clear()
+    yield
+    ovi._aoss_generation_cache.clear()
 
 
 def _client_error(code):
@@ -84,6 +93,10 @@ class TestParseAossCollection:
         # Managed OpenSearch Service (es), not Serverless (aoss) -- no generation concept.
         assert ovi._parse_aoss_collection("https://search-x.us-east-1.es.amazonaws.com") is None
 
+    def test_parses_china_partition_host(self):
+        assert ovi._parse_aoss_collection(
+            "https://abc123xyz.cn-north-1.aoss.amazonaws.com.cn") == ("abc123xyz", "cn-north-1")
+
 
 class TestResolveGeneration:
 
@@ -104,7 +117,21 @@ class TestResolveGeneration:
 
     def test_client_built_with_region_from_endpoint(self):
         _, _, mock_cfg = _resolve()
-        mock_cfg.session.client.assert_called_once_with('opensearchserverless', region_name='us-east-1')
+        mock_cfg.session.client.assert_called_once_with(
+            'opensearchserverless', region_name='us-east-1', config=ovi._AOSS_CONTROL_PLANE_CONFIG)
+
+    def test_result_is_memoized_per_collection(self):
+        # Second lookup of the same collection is served from cache; no extra control-plane calls.
+        _, fake, mock_cfg = _resolve(generation='NEXTGEN')
+        assert ovi._resolve_aoss_generation(_AOSS_ENDPOINT) is OpenSearchServerlessGeneration.NEXTGEN
+        mock_cfg.session.client.assert_called_once()
+        fake.batch_get_collection.assert_called_once()
+        fake.batch_get_collection_group.assert_called_once()
+
+    def test_transient_failure_is_not_cached(self):
+        # A failed resolution must not be cached, so a later index can retry.
+        _resolve(collection_error=_client_error('ThrottlingException'))
+        assert ('abc123xyz', 'us-east-1') not in ovi._aoss_generation_cache
 
     def test_access_denied_falls_back(self):
         result, _, _ = _resolve(collection_error=_client_error('AccessDeniedException'))
