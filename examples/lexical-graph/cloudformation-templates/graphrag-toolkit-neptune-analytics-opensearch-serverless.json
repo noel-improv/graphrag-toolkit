@@ -456,6 +456,14 @@
           "Statement": [
             {
               "Effect": "Allow",
+              "Action": [
+                "aoss:BatchGetCollection",
+                "aoss:BatchGetCollectionGroup"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
               "Action": "aoss:APIAccessAll",
               "Resource": [
                 {
