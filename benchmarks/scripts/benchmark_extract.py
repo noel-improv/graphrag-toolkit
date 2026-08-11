@@ -247,6 +247,29 @@ class ConcurrentQaBenchmarkExtract(IntegrationTestBase):
         run_benchmark_extract(handler, dataset_name, BENCHMARK_DATA_DIR, expected_docs, use_batch)
 
 
+class WikihowSubsetBenchmarkExtract(IntegrationTestBase):
+    """
+    Every 10th WikiHow document, 500 of the 5,000, so the subset spans the
+    corpus instead of one alphabetical slice of it.
+
+    Runs on-demand rather than batch. Batch inference selects the Batch*
+    extractors, which submit Bedrock jobs and never read
+    extraction_num_threads_per_worker - a thread sweep run under batch would be
+    measuring the S3 pools. Override with BENCHMARK_USE_BATCH=true.
+    """
+
+    @property
+    def description(self):
+        return 'Extract propositions and topics from a 500-document WikiHow subset'
+
+    def _run_test(self, handler: IntegrationTestHandler, params: Dict[str, Any]):
+        use_batch = os.environ.get('BENCHMARK_USE_BATCH', 'false').lower() == 'true'
+
+        run_benchmark_extract(
+            handler, 'wikihow-subset', BENCHMARK_DATA_DIR, expected_docs=500, use_batch=use_batch
+        )
+
+
 class WikihowBenchmarkExtract(IntegrationTestBase):
 
     @property

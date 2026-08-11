@@ -403,6 +403,21 @@ fi
 if [[ "$BENCHMARK_S3_JSONL" ]]; then
 	echo "export BENCHMARK_S3_JSONL=$BENCHMARK_S3_JSONL" >> lexical-graph-examples/.env.testing
 fi
+if [[ "$BENCHMARK_METRICS_DIR" ]]; then
+	echo "export BENCHMARK_METRICS_DIR=$BENCHMARK_METRICS_DIR" >> lexical-graph-examples/.env.testing
+fi
+if [[ "$BENCHMARK_RETRY_LOGS" ]]; then
+	echo "export BENCHMARK_RETRY_LOGS='$BENCHMARK_RETRY_LOGS'" >> lexical-graph-examples/.env.testing
+fi
+if [[ "$BENCHMARK_USE_BATCH" ]]; then
+	echo "export BENCHMARK_USE_BATCH=$BENCHMARK_USE_BATCH" >> lexical-graph-examples/.env.testing
+fi
+if [[ "$EXTRACTION_NUM_WORKERS" ]]; then
+	echo "export EXTRACTION_NUM_WORKERS=$EXTRACTION_NUM_WORKERS" >> lexical-graph-examples/.env.testing
+fi
+if [[ "$EXTRACTION_NUM_THREADS_PER_WORKER" ]]; then
+	echo "export EXTRACTION_NUM_THREADS_PER_WORKER=$EXTRACTION_NUM_THREADS_PER_WORKER" >> lexical-graph-examples/.env.testing
+fi
 
 zip -r graphrag-toolkit.zip graphrag-toolkit # zip under directory
 
