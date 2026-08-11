@@ -418,6 +418,9 @@ fi
 if [[ "$EXTRACTION_NUM_THREADS_PER_WORKER" ]]; then
 	echo "export EXTRACTION_NUM_THREADS_PER_WORKER=$EXTRACTION_NUM_THREADS_PER_WORKER" >> lexical-graph-examples/.env.testing
 fi
+if [[ "$EXTRACTION_THREAD_SWEEP" ]]; then
+	echo "export EXTRACTION_THREAD_SWEEP='$EXTRACTION_THREAD_SWEEP'" >> lexical-graph-examples/.env.testing
+fi
 
 zip -r graphrag-toolkit.zip graphrag-toolkit # zip under directory
 
