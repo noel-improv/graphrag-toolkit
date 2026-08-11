@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 from benchmarks.scripts.integration_test_base import IntegrationTestBase
 from benchmarks.scripts.integration_test_handler import IntegrationTestHandler
 from benchmarks.utils.s3_utils import sync_benchmark_data_from_s3
+from benchmarks.utils import run_metrics
 
 from graphrag_toolkit.lexical_graph import LexicalGraphIndex
 from graphrag_toolkit.lexical_graph import GraphRAGConfig, IndexingConfig
@@ -70,7 +71,11 @@ def run_benchmark_extract(handler: IntegrationTestHandler,
     """
     input_path = os.path.join(data_dir, dataset_name, 'documents')
 
-    sync_benchmark_data_from_s3(dataset_name, data_dir)
+    # No-op unless BENCHMARK_METRICS_DIR is set, so an ordinary run is unchanged.
+    run_metrics.install()
+
+    with run_metrics.phase('sync_benchmark_data'):
+        sync_benchmark_data_from_s3(dataset_name, data_dir)
 
     doc_store = os.environ.get('BENCHMARK_DOC_STORE', 'file').lower()
 
@@ -95,7 +100,26 @@ def run_benchmark_extract(handler: IntegrationTestHandler,
         'TEST_EXTRACTION_LLM', 'us.anthropic.claude-sonnet-4-6'
     )
     GraphRAGConfig.extraction_batch_size = 15000
-    GraphRAGConfig.extraction_num_workers = 2
+
+    # Both knobs are overridable so a sweep can vary one per run. The defaults
+    # are the values this harness has always used, so an unconfigured run is
+    # unchanged. A single-worker baseline needs EXTRACTION_NUM_WORKERS=1.
+    GraphRAGConfig.extraction_num_workers = int(os.environ.get('EXTRACTION_NUM_WORKERS', 2))
+
+    num_threads = os.environ.get('EXTRACTION_NUM_THREADS_PER_WORKER')
+    if num_threads:
+        GraphRAGConfig.extraction_num_threads_per_worker = int(num_threads)
+
+    # This knob drives LLM concurrency only on the on-demand path
+    # (TopicExtractor / LLMPropositionExtractor take it as num_workers). Under
+    # batch inference the Batch* extractors submit jobs instead, and it reaches
+    # nothing but the S3 read and write pools - so a thread sweep run with
+    # use_batch=True measures S3 IO, not extraction concurrency.
+    logger.info(
+        f'Extraction concurrency [num_workers: {GraphRAGConfig.extraction_num_workers}, '
+        f'num_threads_per_worker: {GraphRAGConfig.extraction_num_threads_per_worker}, '
+        f'use_batch: {use_batch}]'
+    )
 
     # The harness exports AWS_REGION_NAME, but boto3 clients take their region
     # from GraphRAGConfig. The region= argument on BatchConfig and S3BasedDocs is
@@ -148,14 +172,47 @@ def run_benchmark_extract(handler: IntegrationTestHandler,
         else:
             graph_index = LexicalGraphIndex(graph_store, vector_store)
 
-        docs = SimpleDirectoryReader(input_dir=input_path).load_data()
+        with run_metrics.phase('read_source_documents'):
+            docs = SimpleDirectoryReader(input_dir=input_path).load_data()
         logger.info(f'Starting extraction for {len(docs)} documents')
 
-        graph_index.extract(docs, handler=extracted_docs, show_progress=True)
+        handler.add_output('num_source_docs', len(docs))
 
-    num_extracted = _count_source_docs(extracted_docs)
+        with run_metrics.phase('extract'):
+            graph_index.extract(docs, handler=extracted_docs, show_progress=True)
+
+    with run_metrics.phase('count_extracted_docs'):
+        num_extracted = _count_source_docs(extracted_docs)
+
     handler.add_output('num_extracted_docs', num_extracted)
     handler.add_output('collection_id', extracted_docs.collection_id)
+    handler.add_output('extraction_num_workers', GraphRAGConfig.extraction_num_workers)
+    handler.add_output(
+        'extraction_num_threads_per_worker', GraphRAGConfig.extraction_num_threads_per_worker
+    )
+    handler.add_output('use_batch', use_batch)
+    handler.add_output('doc_store', doc_store)
+
+    # Documents that failed extraction are set to None and logged at debug level
+    # rather than raised (batch_extractor_base.py), so a drop is only visible as
+    # a shortfall against the input count. Recorded, not asserted on - the
+    # expected-count assertion below is what fails the run.
+    handler.add_output('num_dropped_docs', len(docs) - num_extracted)
+
+    metrics_dir = os.environ.get(run_metrics.METRICS_DIR_VAR)
+    if metrics_dir:
+        # Flush this process before summarizing; workers flush at their own exit.
+        process_metrics = run_metrics.get_metrics()
+        if process_metrics:
+            process_metrics.flush()
+        handler.add_output('run_metrics', run_metrics.summarize(metrics_dir))
+
+    # Extraction runs in spawn-started children, which carry none of the
+    # parent's logging config or handlers, so their retries are only ever
+    # visible in the logs. This is the count that covers extraction.
+    retry_log_paths = run_metrics.default_retry_log_paths()
+    handler.add_output('retry_log_paths', retry_log_paths)
+    handler.add_output('retry_counts', run_metrics.count_retries_in_logs(retry_log_paths))
 
     class BenchmarkExtractAssertions(unittest.TestCase):
         @classmethod
