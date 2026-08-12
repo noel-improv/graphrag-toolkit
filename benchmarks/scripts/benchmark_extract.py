@@ -280,15 +280,18 @@ def run_thread_sweep(handler: IntegrationTestHandler,
     num_workers = int(os.environ.get('EXTRACTION_NUM_WORKERS', 1))
     input_path = os.path.join(data_dir, dataset_name, 'documents')
 
+    # Region first. Assigning extraction_llm constructs a BedrockConverse client
+    # straight away, so setting the region afterwards would build it against the
+    # ambient region rather than the one the harness asked for.
+    aws_region = os.environ.get('AWS_REGION_NAME')
+    if aws_region:
+        GraphRAGConfig.aws_region = aws_region
+
     GraphRAGConfig.extraction_llm = os.environ.get(
         'TEST_EXTRACTION_LLM', 'us.anthropic.claude-sonnet-4-6'
     )
     GraphRAGConfig.extraction_batch_size = 15000
     GraphRAGConfig.extraction_num_workers = num_workers
-
-    aws_region = os.environ.get('AWS_REGION_NAME')
-    if aws_region:
-        GraphRAGConfig.aws_region = aws_region
 
     logger.info(f'Starting thread sweep [thread_counts: {thread_counts}, num_workers: {num_workers}]')
 
@@ -301,11 +304,20 @@ def run_thread_sweep(handler: IntegrationTestHandler,
         ) as graph_store,
         VectorStoreFactory.for_vector_store(os.environ['VECTOR_STORE']) as vector_store
     ):
-        graph_index = LexicalGraphIndex(graph_store, vector_store)
         docs = SimpleDirectoryReader(input_dir=input_path).load_data()
 
         for num_threads in thread_counts:
             GraphRAGConfig.extraction_num_threads_per_worker = num_threads
+
+            # Built inside the loop, and only after the thread count is set.
+            # LexicalGraphIndex.__init__ configures the extraction pipeline and
+            # stores the components; extract() reuses them. TopicExtractor and
+            # LLMPropositionExtractor read extraction_num_threads_per_worker at
+            # construction, so an index built once outside this loop would run
+            # every setting at whichever count was current when it was built.
+            # extraction_num_workers is not affected - ExtractionPipeline.create
+            # reads it per extract() call.
+            graph_index = LexicalGraphIndex(graph_store, vector_store)
 
             # A fresh collection per setting. collection_id=None stamps a new
             # timestamped collection, so settings never read each other's output.
