@@ -10,7 +10,7 @@ from typing import Optional, Any, Union
 
 from graphrag_toolkit.lexical_graph import ModelError
 from graphrag_toolkit.lexical_graph.utils.bedrock_utils import *
-from graphrag_toolkit.lexical_graph.config import GraphRAGConfig
+from graphrag_toolkit.lexical_graph.config import GraphRAGConfig, BOTOCORE_DEFAULT_MAX_POOL_CONNECTIONS
 
 from llama_index.core.llms.llm import LLM
 from llama_index.llms.bedrock_converse import BedrockConverse
@@ -25,6 +25,45 @@ c_red, c_blue, c_green, c_cyan, c_norm = "\x1b[31m",'\033[94m','\033[92m', '\033
 
 MAX_ATTEMPTS = 2
 TIMEOUT = 60.0
+
+
+def bedrock_client_config() -> Config:
+    """
+    Build the botocore config for the bedrock-runtime client.
+
+    Extraction issues one concurrent request per thread, but this client was
+    created without a pool size, so it took botocore's default of 10. Once the
+    pool is exhausted botocore discards and reopens connections, paying a fresh
+    TCP and TLS handshake per call, which costs back the concurrency the extra
+    threads were meant to buy.
+
+    Measured over a 500-document sweep: achieved concurrency sat at ~16 in-flight
+    requests whether 32, 64 or 128 threads were configured, while Bedrock's own
+    InvocationLatency stayed flat at ~6.6s - so whatever capped it was on this
+    side of the wire.
+
+    GraphRAGConfig sizes the S3 pool the same way in `_client_config`, added by
+    PR #420; this brings the Bedrock client into line with it.
+    """
+    num_threads = GraphRAGConfig.extraction_num_threads_per_worker
+
+    # Sizing the pool must never be the reason a client cannot be built, so
+    # anything that is not a usable thread count falls back to the default
+    # rather than raising out of client creation.
+    if not isinstance(num_threads, int) or num_threads < 1:
+        logger.debug(
+            f'Unusable thread count for pool sizing, using the botocore default '
+            f'[value: {num_threads!r}]'
+        )
+        num_threads = BOTOCORE_DEFAULT_MAX_POOL_CONNECTIONS
+
+    return Config(
+        retries={'max_attempts': MAX_ATTEMPTS, 'mode': 'standard'},
+        connect_timeout=TIMEOUT,
+        read_timeout=TIMEOUT,
+        max_pool_connections=max(BOTOCORE_DEFAULT_MAX_POOL_CONNECTIONS, num_threads),
+    )
+
 
 class LLMCache(BaseModel):
 
@@ -46,11 +85,7 @@ class LLMCache(BaseModel):
         try:
             if isinstance(self.llm, BedrockConverse):
                 if not hasattr(self.llm, '_client'):
-                    config = Config(
-                        retries={'max_attempts': MAX_ATTEMPTS, 'mode': 'standard'},
-                        connect_timeout=TIMEOUT,
-                        read_timeout=TIMEOUT,
-                    )
+                    config = bedrock_client_config()
                     
                     session = GraphRAGConfig.session
                     self.llm._client = session.client('bedrock-runtime', config=config, region_name=self.llm.region_name)
@@ -100,11 +135,7 @@ class LLMCache(BaseModel):
             try:
                 if isinstance(self.llm, BedrockConverse):
                     if not hasattr(self.llm, '_client'):
-                        config = Config(
-                            retries={'max_attempts': MAX_ATTEMPTS, 'mode': 'standard'},
-                            connect_timeout=TIMEOUT,
-                            read_timeout=TIMEOUT,
-                        )
+                        config = bedrock_client_config()
                         
                         session = GraphRAGConfig.session
                         self.llm._client = session.client('bedrock-runtime', config=config, region_name=self.llm.region_name)
@@ -129,11 +160,7 @@ class LLMCache(BaseModel):
                 try:
                     if isinstance(self.llm, BedrockConverse):
                         if not hasattr(self.llm, '_client'):
-                            config = Config(
-                                retries={'max_attempts': MAX_ATTEMPTS, 'mode': 'standard'},
-                                connect_timeout=TIMEOUT,
-                                read_timeout=TIMEOUT,
-                            )
+                            config = bedrock_client_config()
                             
                             session = GraphRAGConfig.session
                             self.llm._client = session.client('bedrock-runtime', config=config, region_name=self.llm.region_name)
