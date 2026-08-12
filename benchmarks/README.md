@@ -21,14 +21,23 @@ The benchmarking pipeline has up to four stages:
 
 ## Configuration
 
-Create a `.env` file in the `integration-tests/` directory based on `env.template`:
+Benchmarks are deployed using `integration-tests/build-tests.sh`. Create a `.env` file in the `integration-tests/` directory:
 
 ```bash
+cd integration-tests
 cp env.template .env
-# Edit .env with your bucket name, region, and model preferences
+# Edit .env with your bucket name, region, and benchmark preferences
 ```
 
-See `env.template` for all available configuration options.
+The `benchmarks/env.template` documents the benchmark-specific variables (a subset of the full `integration-tests/env.template`). Key benchmark variables:
+
+- `BENCHMARK_DATA_S3_URI` — S3 URI containing your benchmark datasets
+- `BENCHMARK_DATA_DIR` — Local directory with benchmark data (alternative to S3)
+- `BENCHMARK_QA_LIMIT` — Limit QA pairs for quick prototype runs
+- `BENCHMARK_IS_PROTOTYPE` — Use prototype (small) datasets
+- `BENCHMARK_DOC_STORE` — Where extracted documents are staged between extract and build: `file` (default) or `s3`
+- `BENCHMARK_S3_JSONL` — With `BENCHMARK_DOC_STORE=s3`, store one JSONL object per source document instead of one per chunk
+- `EXISTING_VPC_ID` / `EXISTING_SUBNET_IDS` — Reuse an existing VPC to avoid quota limits
 
 ## S3 Data Layout
 
@@ -152,7 +161,7 @@ sh build-tests.sh \
   --neptune-instance-type db.r8g.2xlarge \
   --notebook-instance-type ml.m5.4xlarge \
   --benchmark-data-s3-uri s3://my-benchmarking-bucket/benchmark-data/ \
-  --test-file benchmark.wikihow
+  --test-file benchmarks/datasets/benchmark.wikihow
 ```
 
 **Resource requirements:**
@@ -251,9 +260,8 @@ aws s3 sync s3://<your-bucket>/wikihow-benchmark-results/ benchmark-results/wiki
 aws s3 sync s3://<your-bucket>/pga-benchmark-results/ benchmark-results/pga/ --region us-west-2
 
 # Generate comparison reports
-cd integration-tests/test-scripts
 python -c "
-from graphrag_toolkit_tests.benchmark_utils.comparison_report import generate_comparison_report
+from benchmarks.utils.comparison_report import generate_comparison_report
 generate_comparison_report('cuad', '/path/to/benchmark-results')
 generate_comparison_report('concurrentqa', '/path/to/benchmark-results')
 generate_comparison_report('wikihow', '/path/to/benchmark-results')
@@ -272,13 +280,13 @@ Use prototype mode to validate the pipeline with a small subset of data (2 docum
 sh build-tests.sh \
   --benchmark-data-s3-uri s3://my-benchmarking-bucket/benchmark-data/ \
   --benchmark-prototype \
-  --test-file benchmark.cuad.prototype
+  --test-file benchmarks/datasets/benchmark.cuad.prototype
 
 # ConcurrentQA prototype (includes extraction)
 sh build-tests.sh \
   --benchmark-data-s3-uri s3://my-benchmarking-bucket/benchmark-data/ \
   --benchmark-prototype \
-  --test-file benchmark.concurrentqa.prototype
+  --test-file benchmarks/datasets/benchmark.concurrentqa.prototype
 ```
 
 ## Monitoring
@@ -336,7 +344,7 @@ The build stage uses conservative settings to avoid OOM on large datasets:
 | `build_batch_size` | 10 | Documents per batch |
 | `build_batch_write_size` | 25 | Graph write batch size |
 
-These are set in `benchmark_build.py` and apply to all benchmark datasets. For smaller datasets (like CUAD), these are more conservative than necessary but ensure stability.
+These are set in `benchmarks/scripts/benchmark_build.py` and apply to all benchmark datasets. For smaller datasets (like CUAD), these are more conservative than necessary but ensure stability.
 
 ## Dataset Details
 
@@ -379,7 +387,7 @@ After running all retrievers, generate `comparison_report.json` at `benchmark-re
 
 ## Adding a New Benchmark Dataset
 
-1. Add a dataset entry to `DATASET_CONFIG` in `benchmark_build.py`:
+1. Add a dataset entry to `DATASET_CONFIG` in `benchmarks/scripts/benchmark_build.py`:
    ```python
    'my-dataset': {
        'num_docs': 100,
@@ -388,11 +396,13 @@ After running all retrievers, generate `comparison_report.json` at `benchmark-re
    }
    ```
 
-2. Add QA file mapping in `benchmark_query.py`:
+2. Add QA file mapping in `benchmarks/utils/dataset_config.py`:
    ```python
    QA_FILE_MAP = {
        ...
-       'my-dataset': ['qa.json'],
+       'my-dataset': {'files': ['qa.json']},
+       # For a split that shares a parent directory:
+       # 'my-dataset_subset': {'files': ['subset.json'], 'parent': 'my-dataset'},
    }
    ```
 
@@ -400,4 +410,4 @@ After running all retrievers, generate `comparison_report.json` at `benchmark-re
 
 4. Create test classes for Build, Query, and Evaluate (follow the CUAD/ConcurrentQA patterns).
 
-5. Optionally create a test file (e.g., `benchmark.my-dataset`) listing the test classes.
+5. Optionally create a suite file (e.g., `benchmarks/datasets/benchmark.my-dataset`) listing the test classes.

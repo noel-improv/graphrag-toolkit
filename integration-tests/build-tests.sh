@@ -79,6 +79,7 @@ if [[ "$#" -gt 0 ]]; then
 		echo "  --topic <SNS topic name>"
 		echo "  --extraction-llm <Model id or profile name>"
     echo "  --response-llm <Model id or profile name>"
+    echo "  --judge-llm <Model id for evaluation judge>"
     echo "  --embeddings-model <Embeddings model id>"
     echo "  --embeddings-dimensions <Embeddings dimensions>"
     echo "  --lexical-graph-wheel <path to local .whl file to upload to S3 and install>"
@@ -88,6 +89,8 @@ if [[ "$#" -gt 0 ]]; then
     echo "  --benchmark-data-s3-uri <S3 URI for benchmark data (synced at runtime instead of uploading)>"
     echo "  --benchmark-qa-limit <max number of QA pairs to evaluate (for prototype runs)>"
     echo "  --benchmark-prototype"
+    echo "  --benchmark-all-retrievers  Run all retrievers in a single pass (loops query+evaluate per retriever)"
+    echo "  --benchmark-dataset <dataset>  Dataset for all-retrievers mode (cuad|concurrentqa|pga|pga_bio|pga_stat|wikihow)"
     echo "  --existing-vpc-id <Existing VPC ID to reuse (skip VPC creation)>"
     echo "  --existing-subnet-ids <Comma-separated existing subnet IDs (min 2, spanning 2 AZs)>"
     echo "  --prev-stack <Previous stack name or ID>"
@@ -141,6 +144,10 @@ if [[ -z "$TEST_RESPONSE_LLM" ]]; then
 	TEST_RESPONSE_LLM="us.anthropic.claude-sonnet-4-6"
 fi
 
+if [[ -z "$BENCHMARK_JUDGE_LLM" ]]; then
+	BENCHMARK_JUDGE_LLM="us.anthropic.claude-sonnet-4-6"
+fi
+
 if [[ -z "$NEPTUNE_INSTANCE_TYPE" ]]; then
 	NEPTUNE_INSTANCE_TYPE="db.r8g.large"
 fi
@@ -169,6 +176,7 @@ while [[ "$#" -gt 0 ]]; do
 				--topic) TOPIC="$2"; shift ;;
 				--extraction-llm) TEST_EXTRACTION_LLM="$2"; shift ;;
         --response-llm) TEST_RESPONSE_LLM="$2"; shift ;;
+        --judge-llm) BENCHMARK_JUDGE_LLM="$2"; shift ;;
         --embeddings-model) EMBEDDINGS_MODEL="$2"; shift ;;
         --embeddings-dimensions) EMBEDDINGS_DIMENSIONS="$2"; shift ;;
 				--toolkit-dir) GRAPHRAG_TOOLKIT_DIR="$2"; shift ;;
@@ -177,6 +185,8 @@ while [[ "$#" -gt 0 ]]; do
         --benchmark-data-s3-uri) BENCHMARK_DATA_S3_URI="$2"; shift ;;
         --benchmark-qa-limit) BENCHMARK_QA_LIMIT="$2"; shift ;;
         --benchmark-prototype) BENCHMARK_IS_PROTOTYPE=true ;;
+        --benchmark-all-retrievers) BENCHMARK_ALL_RETRIEVERS=true ;;
+        --benchmark-dataset) BENCHMARK_DATASET="$2"; shift ;;
         --existing-vpc-id) EXISTING_VPC_ID="$2"; shift ;;
         --existing-subnet-ids) EXISTING_SUBNET_IDS="$2"; shift ;;
         --prev-stack) PREV_STACK_NAME="$2"; shift ;;
@@ -219,13 +229,24 @@ if [[ "$TEST_FILE" ]]; then
   files=$(echo $TEST_FILE | tr "," "\n")
   for f in $files
   do
+    suite_file="$f"
+    if [[ ! -f "$suite_file" ]]; then
+      base_name=$(basename "$f")
+      alt_path="../benchmarks/datasets/$base_name"
+      if [[ -f "$alt_path" ]]; then
+        suite_file="$alt_path"
+      else
+        echo "ERROR: Suite file not found: $f (searched CWD and ../benchmarks/datasets/)"
+        exit 1
+      fi
+    fi
   	while IFS= read -r line || [[ -n "$line" ]]; do
   			if [[ "$TESTS" ]]; then
   				TESTS+=" $line"
   			else
   				TESTS+="$line"
   			fi
-  	done < $f
+  	done < $suite_file
   done
 fi
 
@@ -299,6 +320,7 @@ cp -r $GRAPHRAG_TOOLKIT_DIR/examples/lexical-graph/notebooks/* lexical-graph-exa
 cp -r $GRAPHRAG_TOOLKIT_DIR/examples/byokg-rag/* lexical-graph-examples
 cp -r ./../test-scripts/* lexical-graph-examples
 cp -r ./../source-data lexical-graph-examples/source-data
+cp -r $GRAPHRAG_TOOLKIT_DIR/benchmarks lexical-graph-examples/benchmarks
 
 # Include benchmark data if local dir is specified and no S3 URI is provided
 # Only copies dataset subdirectories that match the tests being run
@@ -350,6 +372,7 @@ echo "export BATCH_INFERENCE_ROLE=$BATCH_INFERENCE_ROLE" >> lexical-graph-exampl
 echo "export FAIL_FAST=$FAIL_FAST" >> lexical-graph-examples/.env.testing
 echo "export TEST_EXTRACTION_LLM=$TEST_EXTRACTION_LLM" >> lexical-graph-examples/.env.testing
 echo "export TEST_RESPONSE_LLM=$TEST_RESPONSE_LLM" >> lexical-graph-examples/.env.testing
+echo "export BENCHMARK_JUDGE_LLM=$BENCHMARK_JUDGE_LLM" >> lexical-graph-examples/.env.testing
 echo "export INCLUDE_CLASSIFICATION_IN_ENTITY_ID=False" >> lexical-graph-examples/.env.testing
 if [[ "$TESTS" ]]; then
 	echo "export TESTS='$TESTS'" >> lexical-graph-examples/.env.testing
@@ -377,6 +400,18 @@ if [[ "$BENCHMARK_QA_LIMIT" ]]; then
 fi
 if [[ "$BENCHMARK_IS_PROTOTYPE" ]]; then
 	echo "export BENCHMARK_IS_PROTOTYPE=$BENCHMARK_IS_PROTOTYPE" >> lexical-graph-examples/.env.testing
+fi
+if [[ "${BENCHMARK_ALL_RETRIEVERS:-}" ]]; then
+	echo "export BENCHMARK_ALL_RETRIEVERS=$BENCHMARK_ALL_RETRIEVERS" >> lexical-graph-examples/.env.testing
+fi
+if [[ "${BENCHMARK_DATASET:-}" ]]; then
+	echo "export BENCHMARK_DATASET=$BENCHMARK_DATASET" >> lexical-graph-examples/.env.testing
+fi
+if [[ "$BENCHMARK_DOC_STORE" ]]; then
+	echo "export BENCHMARK_DOC_STORE=$BENCHMARK_DOC_STORE" >> lexical-graph-examples/.env.testing
+fi
+if [[ "$BENCHMARK_S3_JSONL" ]]; then
+	echo "export BENCHMARK_S3_JSONL=$BENCHMARK_S3_JSONL" >> lexical-graph-examples/.env.testing
 fi
 
 zip -r graphrag-toolkit.zip graphrag-toolkit # zip under directory
@@ -438,6 +473,8 @@ echo "TESTS                    : $TESTS"
 echo "BENCHMARK_DATA_DIR       : $BENCHMARK_DATA_DIR"
 echo "BENCHMARK_DATA_S3_URI    : $BENCHMARK_DATA_S3_URI"
 echo "BENCHMARK_QA_LIMIT       : $BENCHMARK_QA_LIMIT"
+echo "BENCHMARK_ALL_RETRIEVERS : ${BENCHMARK_ALL_RETRIEVERS:-}"
+echo "BENCHMARK_DATASET        : ${BENCHMARK_DATASET:-}"
 echo "EXISTING_VPC_ID          : $EXISTING_VPC_ID"
 echo "EXISTING_SUBNET_IDS      : $EXISTING_SUBNET_IDS"
 echo "PREV_STACK_NAME"         : $PREV_STACK_NAME

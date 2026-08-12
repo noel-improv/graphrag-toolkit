@@ -30,8 +30,13 @@ def get_lexical_graph_version():
 
 def to_test_class(t):
     parts = t.split('.')
-    module_name = f'graphrag_toolkit_tests.{parts[0]}'
     class_name = parts[1]
+    
+    if parts[0].startswith('benchmark_'):
+        module_name = f'benchmarks.scripts.{parts[0]}'
+    else:
+        module_name = f'graphrag_toolkit_tests.{parts[0]}'
+    
     m = importlib.import_module(module_name)
     c = getattr(m, class_name)
     return c
@@ -259,15 +264,20 @@ def run_test_suite():
         
         if result == 'PASS' and delete_on_pass:
             delete_stack(stack_id, delete_stack_role)
-            
+
+        return result
             
     else:
         print('Exiting tests because of CloudFormation failure')
+        return 'FAIL'
 
 
 if __name__ == '__main__':
     start = time.time()
-    run_test_suite()
+    result = run_test_suite()
     end = time.time()
 
     print(end-start)
+
+    if result == 'FAIL':
+        sys.exit(1)

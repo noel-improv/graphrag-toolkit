@@ -8,14 +8,15 @@ from contextlib import nullcontext
 from typing import Dict, Any, Optional, List
 import logging
 
-from graphrag_toolkit_tests.integration_test_base import IntegrationTestBase
-from graphrag_toolkit_tests.integration_test_handler import IntegrationTestHandler
-from graphrag_toolkit_tests.benchmark_utils.s3_utils import sync_benchmark_data_from_s3
-from graphrag_toolkit_tests.benchmark_utils.retriever_factory import create_query_engine, get_retriever_config, ByoKGQueryEngineWrapper
-from graphrag_toolkit_tests.benchmark_utils.token_tracker import TokenTrackingLLMCache, extract_token_usage
-from graphrag_toolkit_tests.benchmark_utils.metrics_summary import compute_metrics_summary
-from graphrag_toolkit_tests.benchmark_utils.hop_classifier import classify_hop
-from graphrag_toolkit_tests.benchmark_utils.agentic_retriever import AgenticRetriever, AgenticQueryResult
+from benchmarks.scripts.integration_test_base import IntegrationTestBase
+from benchmarks.scripts.integration_test_handler import IntegrationTestHandler
+from benchmarks.utils.s3_utils import sync_benchmark_data_from_s3
+from benchmarks.utils.dataset_config import QA_FILE_MAP, get_data_subdir
+from benchmarks.utils.retriever_factory import create_query_engine, get_retriever_config, ByoKGQueryEngineWrapper
+from benchmarks.utils.token_tracker import TokenTrackingLLMCache, extract_token_usage
+from benchmarks.utils.metrics_summary import compute_metrics_summary
+from benchmarks.utils.hop_classifier import classify_hop
+from benchmarks.utils.agentic_retriever import AgenticRetriever, AgenticQueryResult
 
 from graphrag_toolkit.lexical_graph import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.storage import GraphStoreFactory, VectorStoreFactory
@@ -25,22 +26,14 @@ from llama_index.core.schema import QueryBundle
 
 logger = logging.getLogger(__name__)
 
-QA_FILE_MAP = {
-    'cuad': ['qa.json'],
-    'cuad-prototype': ['qa.json'],
-    'pga': ['pga_bio.json', 'pga_stat.json'],
-    'concurrentqa': ['qa.json'],
-    'concurrentqa-prototype': ['qa.json'],
-    'wikihow': ['qa.json'],
-}
-
 BENCHMARK_DATA_DIR = 'source-data'
 
 
 def load_qa_pairs(data_dir: str, dataset: str, qa_files: List[str], limit: Optional[int] = None):
     pairs = []
+    data_subdir = get_data_subdir(dataset)
     for f in qa_files:
-        path = os.path.join(data_dir, dataset, f)
+        path = os.path.join(data_dir, data_subdir, f)
         with open(path) as fh:
             pairs.extend(json.load(fh))
     if limit:
@@ -93,7 +86,7 @@ def run_benchmark_query(handler: IntegrationTestHandler,
     """
     sync_benchmark_data_from_s3(dataset, data_dir)
 
-    qa_files = QA_FILE_MAP.get(dataset, ['qa.json'])
+    qa_files = QA_FILE_MAP.get(dataset, {}).get('files', ['qa.json'])
     qa_pairs = load_qa_pairs(data_dir, dataset, qa_files, qa_limit)
 
     GraphRAGConfig.response_llm = response_llm
@@ -383,6 +376,7 @@ class PgaBenchmarkQuery(IntegrationTestBase):
 
     def _run_test(self, handler: IntegrationTestHandler, params: Dict[str, Any]):
         limit_str = os.environ.get('BENCHMARK_QA_LIMIT')
+        dataset_name = os.environ.get('BENCHMARK_DATASET', 'pga')
         retriever_id = os.environ.get('BENCHMARK_RETRIEVER', 'traversal')
         agentic_max_iterations = int(os.environ.get('AGENTIC_MAX_ITERATIONS', '3'))
         byokg_max_iterations = int(os.environ.get('BYOKG_MAX_ITERATIONS', '2'))
@@ -390,7 +384,7 @@ class PgaBenchmarkQuery(IntegrationTestBase):
         run_benchmark_query(
             handler,
             params,
-            dataset='pga',
+            dataset=dataset_name,
             data_dir=BENCHMARK_DATA_DIR,
             graph_store_conn=os.environ.get('GRAPH_STORE'),
             vector_store_conn=os.environ.get('VECTOR_STORE'),

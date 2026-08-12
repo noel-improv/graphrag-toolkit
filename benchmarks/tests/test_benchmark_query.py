@@ -251,12 +251,12 @@ import os
 from hypothesis.strategies import sampled_from, tuples
 from hypothesis import assume
 
-from graphrag_toolkit_tests.benchmark_utils.retriever_factory import (
+from benchmarks.utils.retriever_factory import (
     VALID_RETRIEVER_IDS,
     SUB_RETRIEVER_IDS,
     get_retriever_config,
 )
-from graphrag_toolkit_tests.benchmark_utils.metrics_summary import compute_metrics_summary
+from benchmarks.utils.metrics_summary import compute_metrics_summary
 
 
 # Strategy for dataset names: alphanumeric + hyphens, min_size=1
@@ -349,7 +349,7 @@ class TestRetrieverConfigReproducibility:
         recorded for the sub-retrievers that set them."""
         hp = get_retriever_config(retriever_id)['hyperparameters']
         assert hp['max_statements'] == 200
-        assert hp['max_search_results'] == 5
+        assert hp['max_search_results'] == 10
         assert hp['vss_top_k'] == 10
 
     @settings(max_examples=50)
