@@ -7,8 +7,11 @@ import logging
 import re
 import time
 import uuid
-from typing import List, Any, Optional, Iterable, Dict
+from typing import List, Any, Optional, Iterable, Dict, Tuple
 from dataclasses import dataclass
+from urllib.parse import urlparse
+
+from botocore.config import Config
 
 from llama_index.core.bridge.pydantic import PrivateAttr, ConfigDict
 from llama_index.core.schema import BaseNode, NodeWithScore, QueryBundle
@@ -406,6 +409,61 @@ def _try_create_index(client, index_name, dimensions, writeable, endpoint, nextg
         return False
 
 
+_AOSS_HOST_RE = re.compile(r'^([^.]+)\.([^.]+)\.aoss\.amazonaws\.com(?:\.cn)?$')
+
+# Bound the control-plane probe so a deployment that reaches the AOSS data plane but not the
+# opensearchserverless control-plane API 
+# fails fast into the reactive fallback instead of blocking on botocore's default ~60s connect
+# timeout once per index. See #399.
+_AOSS_CONTROL_PLANE_CONFIG = Config(connect_timeout=2, read_timeout=5, retries={'max_attempts': 2})
+
+# A collection's generation is invariant, so memoize it per (collection_id, region) to avoid
+# re-issuing the two control-plane calls for every index against the same collection. Only successful resolutions are
+# cached; a transient failure raises, returns None, and is left uncached so the next index retries.
+_aoss_generation_cache: Dict[Tuple[str, str], Optional['OpenSearchServerlessGeneration']] = {}
+
+
+def _parse_aoss_collection(endpoint: str) -> Optional[Tuple[str, str]]:
+    """Return (collection_id, region) parsed from an AOSS endpoint host, or None if the
+    host isn't a standard ``{id}.{region}.aoss.amazonaws.com`` collection endpoint."""
+    host = urlparse(endpoint).hostname or endpoint
+    match = _AOSS_HOST_RE.match(host)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _resolve_aoss_generation(endpoint: str) -> Optional['OpenSearchServerlessGeneration']:
+    """Detect an AOSS collection's generation from the control plane via
+    BatchGetCollection -> BatchGetCollectionGroup.
+
+    Returns the reported generation, or None when it can't be determined (non-AOSS
+    host, no collection group, missing IAM, a boto3 too old for the API, or an
+    unexpected response), so the caller falls back to the reactive Classic/NextGen
+    retry.
+    """
+    parsed = _parse_aoss_collection(endpoint)
+    if parsed is None:
+        return None
+    collection_id, region = parsed
+    if parsed in _aoss_generation_cache:
+        return _aoss_generation_cache[parsed]
+    try:
+        client = GraphRAGConfig.session.client('opensearchserverless', region_name=region, config=_AOSS_CONTROL_PLANE_CONFIG)
+        details = client.batch_get_collection(ids=[collection_id]).get('collectionDetails') or []
+        if not details:
+            return None
+        group_name = details[0].get('collectionGroupName')
+        if not group_name:
+            return None
+        groups = client.batch_get_collection_group(names=[group_name]).get('collectionGroupDetails') or []
+        generation = groups[0].get('generation') if groups else None
+        result = OpenSearchServerlessGeneration.parse(generation)
+        _aoss_generation_cache[parsed] = result
+        return result
+    except Exception as e:
+        logger.debug(f'AOSS generation detection unavailable, falling back to reactive detection [endpoint: {endpoint}, error: {e}]')
+        return None
+
+
 def index_exists(endpoint, index_name, dimensions, writeable, client_kwargs=None, *, is_sigv4_auth=True) -> bool:
     """
     Checks if an OpenSearch index exists, and optionally creates it if it does not exist.
@@ -444,17 +502,19 @@ def index_exists(endpoint, index_name, dimensions, writeable, client_kwargs=None
     client_kwargs = {'pool_maxsize': 1, **(client_kwargs or {})}
     client = create_os_client(endpoint, is_sigv4_auth=is_sigv4_auth, **client_kwargs)
     generation = GraphRAGConfig.opensearch_serverless_generation
-    # When unset, generation is detected reactively: try Classic, retry NextGen on
-    # rejection (see _try_create_index). A deterministic alternative is the AOSS
-    # BatchGetCollectionGroup `generation` field, but it needs boto3>=1.43.17 and
-    # aoss:BatchGetCollection[Group] on every client role, so it's deferred with an
-    # AccessDenied fallback to this reactive path. See awslabs/graphrag-toolkit#399.
+    # When generation is unset, detect it from the AOSS control plane (AOSS only).
+    # Detection returns None when unavailable, and the reactive retry below stays the
+    # fallback until NextGen is confirmed. See #399.
+    auto_detect = generation is None
+    if auto_detect and is_sigv4_auth:
+        generation = _resolve_aoss_generation(endpoint)
+    is_nextgen = generation == OpenSearchServerlessGeneration.NEXTGEN
 
     try:
         return _try_create_index(
             client, index_name, dimensions, writeable, endpoint,
-            nextgen=(generation == OpenSearchServerlessGeneration.NEXTGEN),
-            allow_retry=(generation is None),
+            nextgen=is_nextgen,
+            allow_retry=(auto_detect and not is_nextgen),
         )
     finally:
         client.close()
