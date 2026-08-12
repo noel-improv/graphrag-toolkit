@@ -421,6 +421,9 @@ fi
 if [[ "$EXTRACTION_THREAD_SWEEP" ]]; then
 	echo "export EXTRACTION_THREAD_SWEEP='$EXTRACTION_THREAD_SWEEP'" >> lexical-graph-examples/.env.testing
 fi
+if [[ "$BENCHMARK_COLLECTION_ID" ]]; then
+	echo "export BENCHMARK_COLLECTION_ID=$BENCHMARK_COLLECTION_ID" >> lexical-graph-examples/.env.testing
+fi
 
 zip -r graphrag-toolkit.zip graphrag-toolkit # zip under directory
 
