@@ -435,10 +435,17 @@ class WikihowBenchmarkExtract(IntegrationTestBase):
 
     @property
     def description(self):
-        return 'Extract propositions and topics from WikiHow documents using batch inference'
+        return 'Extract propositions and topics from WikiHow documents'
 
     def _run_test(self, handler: IntegrationTestHandler, params: Dict[str, Any]):
-        run_benchmark_extract(handler, 'wikihow', BENCHMARK_DATA_DIR, expected_docs=5000)
+        # Batch stays the default here, as it is the cheaper path for a full
+        # corpus. BENCHMARK_USE_BATCH=false selects on-demand, which is the only
+        # path that honours extraction_num_threads_per_worker.
+        use_batch = os.environ.get('BENCHMARK_USE_BATCH', 'true').lower() == 'true'
+
+        run_benchmark_extract(
+            handler, 'wikihow', BENCHMARK_DATA_DIR, expected_docs=5000, use_batch=use_batch
+        )
 
 
 class PgaBenchmarkExtract(IntegrationTestBase):
