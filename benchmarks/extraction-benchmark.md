@@ -29,7 +29,7 @@ that logged retry warnings, the log paths are wrong - set `BENCHMARK_RETRY_LOGS`
 | `BENCHMARK_METRICS_DIR` | unset | Enables phase timing and counters |
 | `BENCHMARK_RETRY_LOGS` | unset | Comma-separated log paths to scrape for retries |
 | `BENCHMARK_DOC_STORE` | `file` | `file` or `s3` |
-| `CHUNK_STORE` | unset | `s3://bucket/prefix` moves chunk text off the graph |
+| `S3_CHUNK_STORE` | unset | `s3://bucket/prefix` moves chunk text off the graph |
 
 ## Phases
 
