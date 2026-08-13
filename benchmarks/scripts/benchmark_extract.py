@@ -100,7 +100,10 @@ def run_benchmark_extract(handler: IntegrationTestHandler,
     GraphRAGConfig.extraction_llm = os.environ.get(
         'TEST_EXTRACTION_LLM', 'us.anthropic.claude-sonnet-4-6'
     )
-    GraphRAGConfig.extraction_batch_size = 15000
+    # Batch size controls when extracted nodes return to the parent, where the
+    # doc-store uploader runs. One giant batch serializes every upload into a
+    # tail after extraction instead of overlapping it.
+    GraphRAGConfig.extraction_batch_size = int(os.environ.get('EXTRACTION_BATCH_SIZE', 15000))
 
     # Both knobs are overridable so a sweep can vary one per run. The defaults
     # are the values this harness has always used, so an unconfigured run is
