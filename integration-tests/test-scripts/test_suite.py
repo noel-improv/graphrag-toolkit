@@ -1,5 +1,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
+import faulthandler
+
+# The suite runs headless on the notebook instance, where a hang leaves no
+# externally visible trace. Dump every thread's stack to a file in the
+# Jupyter-served directory every 10 minutes, so a stuck run can be diagnosed
+# through the notebook's files API without shell access.
+faulthandler.dump_traceback_later(600, repeat=True, file=open('suite-stacks.log', 'w'))
+
 import os
 import sys
 import time
@@ -147,6 +155,10 @@ def run_test_suite():
     fail_fast = os.environ.get('FAIL_FAST', 'False').lower() == 'true'
     delete_stack_role = os.environ.get('DELETE_STACK_ROLE', None)
     test_list = args_dict.get('test', os.environ.get('TESTS', '').strip().split(' '))
+    # An unset TESTS splits to [''], which passes the emptiness check below and
+    # runs zero tests while reporting PASS. Filter first, so an empty list is
+    # what actually reaches that check.
+    test_list = [t for t in test_list if t]
 
     print(f"S3 results bucket: {s3_results_bucket}")
     print(f"S3 results prefix: {s3_results_prefix}")

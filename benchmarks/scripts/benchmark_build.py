@@ -15,9 +15,98 @@ from graphrag_toolkit.lexical_graph import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.storage import GraphStoreFactory
 from graphrag_toolkit.lexical_graph.storage import VectorStoreFactory
 from graphrag_toolkit.lexical_graph.storage.graph import NonRedactedGraphQueryLogFormatting
-from graphrag_toolkit.lexical_graph.indexing.load import FileBasedDocs
+from graphrag_toolkit.lexical_graph.indexing.load import FileBasedDocs, S3BasedDocs
 
 logger = logging.getLogger(__name__)
+
+
+def _latest_s3_collection(bucket_name: str, key_prefix: str) -> str:
+    """
+    Pick the most recent collection under a doc-store prefix.
+
+    Extract stamps a new timestamped collection every run, so build has no way
+    to name one in advance. Collection ids are `YYYYMMDD-HHMMSS`, which sorts
+    lexicographically in time order, so the last prefix is the newest.
+
+    Set BENCHMARK_COLLECTION_ID to read a specific one instead - needed whenever
+    a prefix holds more than one collection, as a thread sweep leaves behind.
+    """
+    paginator = GraphRAGConfig.s3.get_paginator('list_objects_v2')
+    pages = paginator.paginate(
+        Bucket=bucket_name, Prefix=f'{key_prefix}/', Delimiter='/'
+    )
+
+    collections = sorted(
+        prefix['Prefix'].rstrip('/').rsplit('/', 1)[-1]
+        for page in pages
+        for prefix in page.get('CommonPrefixes', [])
+    )
+
+    if not collections:
+        raise ValueError(
+            f'No collections found under s3://{bucket_name}/{key_prefix}/. '
+            'Check that extraction ran with BENCHMARK_DOC_STORE=s3.'
+        )
+
+    if len(collections) > 1:
+        logger.warning(
+            f'Multiple collections found, using the most recent '
+            f'[collections: {collections}, using: {collections[-1]}]. '
+            'Set BENCHMARK_COLLECTION_ID to choose explicitly.'
+        )
+
+    return collections[-1]
+
+
+def _create_doc_store(dataset: str, data_dir: str, config: Dict[str, Any]):
+    """
+    Build the doc store extraction wrote to.
+
+    BENCHMARK_DOC_STORE selects the backend and has to match what extract used;
+    build reading local disk after extract wrote to S3 is the mismatch this
+    exists to remove.
+    """
+    doc_store = os.environ.get('BENCHMARK_DOC_STORE', 'file').lower()
+
+    if doc_store != 's3':
+        return FileBasedDocs(
+            docs_directory=os.path.join(
+                data_dir, dataset, config.get('extracted_dir', 'extracted')
+            ),
+            collection_id=config.get('collection_id', dataset)
+        )
+
+    missing = sorted(
+        var for var in ('AWS_REGION_NAME', 'S3_RESULTS_BUCKET', 'S3_RESULTS_PREFIX')
+        if not os.environ.get(var)
+    )
+    if missing:
+        raise ValueError(
+            f'BENCHMARK_DOC_STORE=s3 requires {", ".join(missing)} to be set'
+        )
+
+    # Region before any S3 call, so the client is not built against the ambient one.
+    GraphRAGConfig.aws_region = os.environ['AWS_REGION_NAME']
+
+    bucket_name = os.environ['S3_RESULTS_BUCKET']
+    key_prefix = f'{os.environ["S3_RESULTS_PREFIX"]}/doc-store/{dataset}'
+
+    collection_id = os.environ.get('BENCHMARK_COLLECTION_ID') or _latest_s3_collection(
+        bucket_name, key_prefix
+    )
+
+    logger.info(
+        f'Reading extracted docs from S3 '
+        f'[bucket: {bucket_name}, prefix: {key_prefix}, collection_id: {collection_id}]'
+    )
+
+    return S3BasedDocs(
+        region=os.environ['AWS_REGION_NAME'],
+        bucket_name=bucket_name,
+        key_prefix=key_prefix,
+        collection_id=collection_id,
+        for_jsonl=os.environ.get('BENCHMARK_S3_JSONL', 'false').lower() == 'true'
+    )
 
 
 DATASET_CONFIG = {
@@ -78,14 +167,10 @@ def run_benchmark_build(handler: IntegrationTestHandler,
     GraphRAGConfig.build_batch_size = 25
     GraphRAGConfig.build_batch_write_size = 50
 
-    extracted_subdir = config.get('extracted_dir', 'extracted')
-    docs_directory = os.path.join(data_dir, dataset, extracted_subdir)
-    collection_id = config.get('collection_id', dataset)
+    docs = _create_doc_store(dataset, data_dir, config)
 
-    docs = FileBasedDocs(
-        docs_directory=docs_directory,
-        collection_id=collection_id
-    )
+    handler.add_output('doc_store', type(docs).__name__)
+    handler.add_output('collection_id', docs.collection_id)
 
     graph_ctx = GraphStoreFactory.for_graph_store(
         graph_store_conn, log_formatting=NonRedactedGraphQueryLogFormatting()

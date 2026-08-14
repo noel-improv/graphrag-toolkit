@@ -112,7 +112,9 @@ if [[ "${BENCHMARK_ALL_RETRIEVERS:-}" == "true" ]]; then
     echo "Running all-retrievers benchmark loop for dataset: ${BENCHMARK_DATASET:-}"
     bash benchmarks/scripts/run_all_retrievers.sh "$BENCHMARK_DATASET"
 else
-    python test_suite.py "${REMAINING_ARGS[@]}"
+    # Unbuffered, teed into the Jupyter-served directory so the console is
+    # readable through the notebook files API while the suite runs.
+    python -u test_suite.py "${REMAINING_ARGS[@]}" 2>&1 | tee suite-console.log
 fi
 
 popd
