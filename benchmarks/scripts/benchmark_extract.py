@@ -139,8 +139,10 @@ def run_benchmark_extract(handler: IntegrationTestHandler,
             bucket_name=os.environ['S3_RESULTS_BUCKET'],
             key_prefix=f'{os.environ["S3_RESULTS_PREFIX"]}/batch-extract/{dataset_name}',
             role_arn=os.environ['BATCH_INFERENCE_ROLE'],
-            max_batch_size=40000,
-            max_num_concurrent_batches=1
+            max_batch_size=int(os.environ.get('BATCH_MAX_BATCH_SIZE', 40000)),
+            # BatchConfig's own default is 3 concurrent batches; the old pin of 1
+            # serialized batch jobs for no recorded reason.
+            max_num_concurrent_batches=int(os.environ.get('BATCH_MAX_CONCURRENT', 3))
         )
         indexing_config = IndexingConfig(batch_config=batch_config)
 
