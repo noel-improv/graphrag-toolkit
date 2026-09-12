@@ -3,6 +3,7 @@
 
 from pipe import Pipe
 import multiprocessing
+from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from typing import List, Optional, Sequence, Any, cast, Callable, Generator, Union
@@ -36,14 +37,51 @@ def _sink():
 
 sink = _sink()
 
+
+@contextmanager
+def pipeline_executor(num_workers:int):
+    """
+    The worker pool for one pipeline run, shared across its batches: None when
+    one worker runs in the calling process, otherwise a spawn-context
+    ProcessPoolExecutor that is shut down when the run ends.
+
+    Starting a worker costs an interpreter start and a package import, so a run
+    pays that once per worker rather than once per batch.
+
+    Use "spawn": a forked worker can inherit a held lock (e.g. a logging
+    thread's) and deadlock. Spawn starts workers from a clean interpreter,
+    which also drops the GraphRAGConfig singleton's programmatically-set
+    values - so propagate a picklable snapshot via the worker initializer.
+    """
+    if num_workers == 1:
+        yield None
+        return
+
+    config_snapshot = GraphRAGConfig.get_config_snapshot()
+    with ProcessPoolExecutor(
+        max_workers=num_workers,
+        mp_context=multiprocessing.get_context('spawn'),
+        initializer=_init_worker,
+        initargs=(config_snapshot,),
+    ) as executor:
+        yield executor
+
+
 def run_pipeline(
     pipeline:IngestionPipeline,
     node_batches:List[List[BaseNode]],
     cache_collection: Optional[str] = None,
     in_place: bool = True,
     num_workers: int = 1,
+    executor: Optional[ProcessPoolExecutor] = None,
     **kwargs: Any,
 ) -> Sequence[BaseNode]:
+    """
+    Runs the pipeline's transformations over each node batch and yields the
+    nodes. One worker runs in the calling process. More than one run on
+    ``executor`` when given, so a caller with many batches starts its pool once,
+    and on a pool of their own otherwise.
+    """
     transform: Callable[[List[BaseNode]], List[BaseNode]] = partial(
         run_transformations,
         transformations=pipeline.transformations,
@@ -53,32 +91,22 @@ def run_pipeline(
         **kwargs
     )
 
-    # One worker has nothing to run in parallel, and a spawned worker costs a
-    # full interpreter start and package import on every call. The build stage
-    # behind extract() calls this once per batch of four documents, so on a
-    # 500-document run that was 125 spawns and about 1.4 s per document.
     if num_workers == 1:
         for node_batch in node_batches:
             for processed_node in transform(node_batch):
                 yield processed_node
         return
 
-    # Use "spawn": a forked worker can inherit a held lock (e.g. a logging
-    # thread's) and deadlock. Spawn starts workers from a clean interpreter,
-    # which also drops the GraphRAGConfig singleton's programmatically-set
-    # values - so propagate a picklable snapshot via the worker initializer.
-    config_snapshot = GraphRAGConfig.get_config_snapshot()
-    with ProcessPoolExecutor(
-        max_workers=num_workers,
-        mp_context=multiprocessing.get_context('spawn'),
-        initializer=_init_worker,
-        initargs=(config_snapshot,),
-    ) as p:
-        processed_node_batches = p.map(transform, node_batches)
-        
-    for processed_node_batch in processed_node_batches:
-        for processed_node in processed_node_batch:
-            yield processed_node
+    if executor is not None:
+        for processed_node_batch in executor.map(transform, node_batches):
+            for processed_node in processed_node_batch:
+                yield processed_node
+        return
+
+    with pipeline_executor(num_workers) as own_executor:
+        for processed_node_batch in own_executor.map(transform, node_batches):
+            for processed_node in processed_node_batch:
+                yield processed_node
 
 def node_batcher(
         num_batches: int, nodes: Union[Sequence[BaseNode], List[Document]]

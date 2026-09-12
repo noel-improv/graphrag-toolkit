@@ -184,3 +184,31 @@ class TestExtractionPipelineIntegration:
         result = list(pipeline.extract(docs))
         
         assert len(result) >= 5
+
+
+class TestExtractionPipelineSharesOneExecutor:
+    """An extraction starts its worker pool once, not once per batch."""
+
+    def test_every_batch_runs_on_the_same_executor(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        import graphrag_toolkit.lexical_graph.indexing.extract.extraction_pipeline as ep
+
+        shared = object()
+        opened = []
+
+        @contextmanager
+        def one_executor(num_workers):
+            opened.append(num_workers)
+            yield shared
+
+        pipeline = ExtractionPipeline(components=[], num_workers=2, batch_size=1)
+        docs = [Document(text=f"doc {i}", metadata={"file_path": f"{i}.txt"}) for i in range(3)]
+
+        with patch.object(ep, 'pipeline_executor', one_executor), \
+             patch.object(ep, 'run_pipeline', side_effect=lambda *a, **k: []) as run:
+            list(pipeline.extract(docs))
+
+        assert opened == [2]
+        assert run.call_count == 3
+        assert all(call.kwargs['executor'] is shared for call in run.call_args_list)

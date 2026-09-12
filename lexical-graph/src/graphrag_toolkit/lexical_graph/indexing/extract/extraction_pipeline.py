@@ -13,7 +13,7 @@ from graphrag_toolkit.lexical_graph.config import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.metadata import FilterConfig
 from graphrag_toolkit.lexical_graph.versioning import EXTRACT_TIMESTAMP
 from graphrag_toolkit.lexical_graph.indexing import IdGenerator
-from graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils import run_pipeline, node_batcher
+from graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils import run_pipeline, node_batcher, pipeline_executor
 from graphrag_toolkit.lexical_graph.indexing.model import SourceType, SourceDocument, source_documents_from_source_types
 from graphrag_toolkit.lexical_graph.indexing.extract.pipeline_decorator import PipelineDecorator
 from graphrag_toolkit.lexical_graph.indexing.extract.source_doc_parser import SourceDocParser
@@ -436,58 +436,60 @@ class ExtractionPipeline():
 
         total_batches = math.ceil(len(inputs) / self.batch_size) if hasattr(inputs, '__len__') else None
 
-        for batch_num, source_documents in enumerate(iter_batch(input_source_documents, self.batch_size), 1):
+        with pipeline_executor(self.num_workers) as executor:
+            for batch_num, source_documents in enumerate(iter_batch(input_source_documents, self.batch_size), 1):
 
-            for pre_processor in self.pre_processors:
-                source_documents = pre_processor.parse_source_docs(source_documents)
+                for pre_processor in self.pre_processors:
+                    source_documents = pre_processor.parse_source_docs(source_documents)
 
-            source_documents = self.id_rewriter.handle_source_docs(source_documents)
-            source_documents = self.extraction_decorator.handle_input_docs(source_documents)
+                source_documents = self.id_rewriter.handle_source_docs(source_documents)
+                source_documents = self.extraction_decorator.handle_input_docs(source_documents)
 
-            input_nodes = [
-                n
-                for sd in source_documents
-                for n in sd.nodes
-            ]
+                input_nodes = [
+                    n
+                    for sd in source_documents
+                    for n in sd.nodes
+                ]
 
-            filtered_input_nodes = [
-                node
-                for node in input_nodes
-                if self.extraction_filters.filter_source_metadata_dictionary(get_source_metadata(node))
-            ]
+                filtered_input_nodes = [
+                    node
+                    for node in input_nodes
+                    if self.extraction_filters.filter_source_metadata_dictionary(get_source_metadata(node))
+                ]
 
-            batch_label = f'{batch_num}/{total_batches}' if total_batches else f'{batch_num}'
-            logger.info(f'Running extraction pipeline [batch: {batch_label}, batch_size: {self.batch_size}, num_workers: {self.num_workers}]')
+                batch_label = f'{batch_num}/{total_batches}' if total_batches else f'{batch_num}'
+                logger.info(f'Running extraction pipeline [batch: {batch_label}, batch_size: {self.batch_size}, num_workers: {self.num_workers}]')
             
-            node_batches = node_batcher(
-                num_batches=self.num_workers, 
-                nodes=filtered_input_nodes
-            )
+                node_batches = node_batcher(
+                    num_batches=self.num_workers, 
+                    nodes=filtered_input_nodes
+                )
                         
-            output_nodes = run_pipeline(
-                self.ingestion_pipeline,
-                node_batches,
-                num_workers=self.num_workers,
-                **self.pipeline_kwargs
-            )
+                output_nodes = run_pipeline(
+                    self.ingestion_pipeline,
+                    node_batches,
+                    num_workers=self.num_workers,
+                    executor=executor,
+                    **self.pipeline_kwargs
+                )
 
-            extract_timestamp = self.extract_timestamp or int(time.time() * 1000)
+                extract_timestamp = self.extract_timestamp or int(time.time() * 1000)
 
-            def add_timestamp(node):
-                if EXTRACT_TIMESTAMP in node.metadata:
+                def add_timestamp(node):
+                    if EXTRACT_TIMESTAMP in node.metadata:
+                        return node
+                    node.metadata[EXTRACT_TIMESTAMP] = extract_timestamp
                     return node
-                node.metadata[EXTRACT_TIMESTAMP] = extract_timestamp
-                return node
 
-            timestamped_nodes = [
-                add_timestamp(node)
-                for node in output_nodes
-            ]
+                timestamped_nodes = [
+                    add_timestamp(node)
+                    for node in output_nodes
+                ]
   
-            output_source_documents = self._source_documents_from_base_nodes(timestamped_nodes)
+                output_source_documents = self._source_documents_from_base_nodes(timestamped_nodes)
 
-            for source_document in output_source_documents:
-                yield self.extraction_decorator.handle_output_doc(source_document)
+                for source_document in output_source_documents:
+                    yield self.extraction_decorator.handle_output_doc(source_document)
 
     def _split_transformations(self):
         """Partition the ingestion transformations into a chunking prefix and an

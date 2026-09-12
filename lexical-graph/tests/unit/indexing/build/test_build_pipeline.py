@@ -77,3 +77,33 @@ class TestBuildPipelineErrorHandling:
                 )
             except (TypeError, ValueError, AttributeError):
                 pass
+
+
+class TestBuildPipelineSharesOneExecutor:
+    """A build starts its worker pool once, not once per batch of four documents."""
+
+    def test_every_batch_runs_on_the_same_executor(self):
+        from contextlib import contextmanager
+        from llama_index.core.schema import Document
+        from graphrag_toolkit.lexical_graph.indexing.build.null_builder import NullBuilder
+        import graphrag_toolkit.lexical_graph.indexing.build.build_pipeline as bp
+
+        shared = object()
+        opened = []
+
+        @contextmanager
+        def one_executor(num_workers):
+            opened.append(num_workers)
+            yield shared
+
+        # create() returns the Pipe that wraps build(), so drive it as a pipe.
+        pipeline = BuildPipeline.create(components=[NullBuilder()], builders=[], num_workers=2, batch_size=1)
+        docs = [Document(text=f"doc {i}", id_=f"aws::{i:08d}:0000") for i in range(3)]
+
+        with patch.object(bp, 'pipeline_executor', one_executor), \
+             patch.object(bp, 'run_pipeline', side_effect=lambda *a, **k: []) as run:
+            list(docs | pipeline)
+
+        assert opened == [2]
+        assert run.call_count == 3
+        assert all(call.kwargs['executor'] is shared for call in run.call_args_list)

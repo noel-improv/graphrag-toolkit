@@ -12,7 +12,7 @@ from graphrag_toolkit.lexical_graph import TenantId
 from graphrag_toolkit.lexical_graph.config import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.metadata import SourceMetadataFormatter, DefaultSourceMetadataFormatter
 from graphrag_toolkit.lexical_graph.indexing import NodeHandler, IdGenerator
-from graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils import run_pipeline
+from graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils import run_pipeline, pipeline_executor
 from graphrag_toolkit.lexical_graph.indexing.model import SourceType, SourceDocument, source_documents_from_source_types
 from graphrag_toolkit.lexical_graph.indexing.build.node_builder import NodeBuilder
 from graphrag_toolkit.lexical_graph.indexing.build.checkpoint import Checkpoint, CheckpointWriter
@@ -299,46 +299,48 @@ class BuildPipeline():
 
         total_batches = math.ceil(len(inputs) / self.batch_size) if hasattr(inputs, '__len__') else None
 
-        for batch_num, source_documents in enumerate(iter_batch(input_source_documents, self.batch_size), 1):
+        with pipeline_executor(self.num_workers) as executor:
+            for batch_num, source_documents in enumerate(iter_batch(input_source_documents, self.batch_size), 1):
 
-            build_timestamp = int(time.time() * 1000)
+                build_timestamp = int(time.time() * 1000)
 
-            num_source_docs_per_batch = math.ceil(len(source_documents)/self.num_workers)
-            source_doc_batches = iter_batch(source_documents, num_source_docs_per_batch)
+                num_source_docs_per_batch = math.ceil(len(source_documents)/self.num_workers)
+                source_doc_batches = iter_batch(source_documents, num_source_docs_per_batch)
 
-            node_batches:List[List[BaseNode]] = self._to_node_batches(source_doc_batches, build_timestamp)
+                node_batches:List[List[BaseNode]] = self._to_node_batches(source_doc_batches, build_timestamp)
 
-            batch_label = f'{batch_num}/{total_batches}' if total_batches else f'{batch_num}'
-            logger.info(f'Running build pipeline [batch: {batch_label}, batch_size: {self.batch_size}, num_workers: {self.num_workers}, job_sizes: {[len(b) for b in node_batches]}, batch_writes_enabled: {self.batch_writes_enabled}, batch_write_size: {self.batch_write_size}]')
+                batch_label = f'{batch_num}/{total_batches}' if total_batches else f'{batch_num}'
+                logger.info(f'Running build pipeline [batch: {batch_label}, batch_size: {self.batch_size}, num_workers: {self.num_workers}, job_sizes: {[len(b) for b in node_batches]}, batch_writes_enabled: {self.batch_writes_enabled}, batch_write_size: {self.batch_write_size}]')
 
-            output_nodes = run_pipeline(
-                self.inner_pipeline,
-                node_batches,
-                num_workers=self.num_workers,
-                batch_writes_enabled=self.batch_writes_enabled,
-                batch_size=self.batch_size,
-                batch_write_size=self.batch_write_size,
-                include_domain_labels=self.include_domain_labels,
-                include_local_entities=self.include_local_entities,
-                versioning_timestamp=build_timestamp,
-                **self.pipeline_kwargs
-            )
+                output_nodes = run_pipeline(
+                    self.inner_pipeline,
+                    node_batches,
+                    num_workers=self.num_workers,
+                    executor=executor,
+                    batch_writes_enabled=self.batch_writes_enabled,
+                    batch_size=self.batch_size,
+                    batch_write_size=self.batch_write_size,
+                    include_domain_labels=self.include_domain_labels,
+                    include_local_entities=self.include_local_entities,
+                    versioning_timestamp=build_timestamp,
+                    **self.pipeline_kwargs
+                )
 
-            for node in output_nodes:
-                yield node
+                for node in output_nodes:
+                    yield node
 
-            # TODO: Chunk-level reporting is batched at document boundaries.
-            # All chunks for a document are reported at once when the batch completes,
-            # not as each chunk finishes within a worker process. A future improvement
-            # could use multiprocessing-safe mechanisms for true per-chunk progress.
-            if self.progress_monitor:
-                try:
-                    num_docs = len(source_documents)
-                    num_chunks = sum(len(sd.nodes) for sd in source_documents)
-                    self.progress_monitor.increment_graph_processed_documents(num_docs)
-                    self.progress_monitor.increment_graph_processed_chunks(num_chunks)
-                    self.progress_monitor.increment_vector_processed_documents(num_docs)
-                    self.progress_monitor.increment_vector_processed_chunks(num_chunks)
-                except Exception:
-                    logger.warning("ProgressMonitor raised an exception during build tracking", exc_info=True)
+                # TODO: Chunk-level reporting is batched at document boundaries.
+                # All chunks for a document are reported at once when the batch completes,
+                # not as each chunk finishes within a worker process. A future improvement
+                # could use multiprocessing-safe mechanisms for true per-chunk progress.
+                if self.progress_monitor:
+                    try:
+                        num_docs = len(source_documents)
+                        num_chunks = sum(len(sd.nodes) for sd in source_documents)
+                        self.progress_monitor.increment_graph_processed_documents(num_docs)
+                        self.progress_monitor.increment_graph_processed_chunks(num_chunks)
+                        self.progress_monitor.increment_vector_processed_documents(num_docs)
+                        self.progress_monitor.increment_vector_processed_chunks(num_chunks)
+                    except Exception:
+                        logger.warning("ProgressMonitor raised an exception during build tracking", exc_info=True)
 

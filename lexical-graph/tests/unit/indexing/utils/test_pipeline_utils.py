@@ -431,3 +431,54 @@ class TestNodeBatcher:
         assert len(batches[1]) == 4
         assert len(batches[2]) == 4
         assert len(batches[3]) == 3
+
+
+class TestPipelineExecutor:
+    """One pool per pipeline run, shared across its batches."""
+
+    def test_one_worker_has_no_pool(self):
+        from graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils import pipeline_executor
+
+        with patch('graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils.ProcessPoolExecutor') as mock_executor:
+            with pipeline_executor(1) as executor:
+                assert executor is None
+        mock_executor.assert_not_called()
+
+    def test_more_workers_start_one_spawn_pool_and_shut_it_down_after(self):
+        from graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils import pipeline_executor
+
+        with patch('graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils.ProcessPoolExecutor') as mock_executor:
+            mock_pool = MagicMock()
+            mock_pool.__enter__.return_value = mock_pool
+            mock_executor.return_value = mock_pool
+
+            with pipeline_executor(3) as executor:
+                assert executor is mock_pool
+                mock_pool.__exit__.assert_not_called()
+
+        mock_executor.assert_called_once()
+        _, call_kwargs = mock_executor.call_args
+        assert call_kwargs['max_workers'] == 3
+        assert call_kwargs['mp_context'].get_start_method() == 'spawn'
+        assert call_kwargs['initializer'] is _init_worker
+        mock_pool.__exit__.assert_called_once()
+
+    def test_run_pipeline_uses_a_given_executor_and_leaves_it_running(self):
+        mock_pipeline = Mock(spec=IngestionPipeline)
+        mock_pipeline.transformations = []
+        mock_pipeline.cache = None
+        mock_pipeline.disable_cache = True
+        batch1 = [TextNode(text="Node 1", id_="1")]
+        batch2 = [TextNode(text="Node 2", id_="2")]
+        shared = MagicMock()
+        shared.map.return_value = [batch1, batch2]
+
+        with patch('graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils.run_transformations'):
+            with patch('graphrag_toolkit.lexical_graph.indexing.utils.pipeline_utils.ProcessPoolExecutor') as mock_executor:
+                results = list(run_pipeline(mock_pipeline, [batch1, batch2], num_workers=2, executor=shared))
+
+        assert [n.text for n in results] == ["Node 1", "Node 2"]
+        shared.map.assert_called_once()
+        shared.shutdown.assert_not_called()
+        shared.__exit__.assert_not_called()
+        mock_executor.assert_not_called()
