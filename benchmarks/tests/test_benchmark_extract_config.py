@@ -145,6 +145,20 @@ class TestEnvInt:
         with pytest.raises(ValueError, match='X_NUM'):
             env_int('X_NUM', 2)
 
+    @pytest.mark.parametrize('value', ['0', '-2'])
+    def test_below_the_minimum_raises_naming_the_variable(self, monkeypatch, value):
+        monkeypatch.setenv('X_NUM', value)
+        with pytest.raises(ValueError, match='X_NUM'):
+            env_int('X_NUM', 1, minimum=1)
+
+    def test_value_at_the_minimum_is_accepted(self, monkeypatch):
+        monkeypatch.setenv('X_NUM', '1')
+        assert env_int('X_NUM', 3, minimum=1) == 1
+
+    def test_the_default_is_not_checked_against_the_minimum(self, monkeypatch):
+        monkeypatch.delenv('X_NUM', raising=False)
+        assert env_int('X_NUM', 0, minimum=1) == 0
+
 
 class TestEnvString:
 
@@ -266,6 +280,35 @@ class TestExtractionConfigIsOverridable:
         )
 
 
+class TestBatchConfigIsOverridable:
+
+    def _batch_config_keywords(self):
+        for node in ast.walk(_function('build_indexing_config')):
+            if isinstance(node, ast.Call) and getattr(node.func, 'id', '') == 'BatchConfig':
+                return {k.arg: k.value for k in node.keywords}
+        raise AssertionError('no BatchConfig call in build_indexing_config')
+
+    @pytest.mark.parametrize(
+        'keyword, variable, default',
+        [
+            ('max_batch_size', 'BENCHMARK_MAX_BATCH_SIZE', 40000),
+            ('max_num_concurrent_batches', 'BENCHMARK_MAX_NUM_CONCURRENT_BATCHES', 1),
+        ],
+    )
+    def test_read_from_the_environment_with_the_old_default(self, keyword, variable, default):
+        value = self._batch_config_keywords()[keyword]
+        assert isinstance(value, ast.Call) and getattr(value.func, 'id', '') == 'env_int', (
+            f'{keyword} is not read through env_int, so {variable} cannot override it'
+        )
+        assert [getattr(a, 'value', None) for a in value.args[:2]] == [variable, default], (
+            f'{keyword} must read {variable} with the default it had before it was configurable'
+        )
+
+    def test_concurrency_has_a_floor_that_names_the_variable(self):
+        value = self._batch_config_keywords()['max_num_concurrent_batches']
+        assert {k.arg: getattr(k.value, 'value', None) for k in value.keywords} == {'minimum': 1}
+
+
 class TestVariableNameIsPinned:
     """
     The Python call sites and the harness export are joined only by the string
@@ -316,6 +359,8 @@ class TestVariableNameIsPinned:
             'EXTRACTION_NUM_WORKERS',
             'EXTRACTION_BATCH_SIZE',
             'EXTRACTION_NUM_THREADS_PER_WORKER',
+            'BENCHMARK_MAX_BATCH_SIZE',
+            'BENCHMARK_MAX_NUM_CONCURRENT_BATCHES',
         ],
     )
     def test_harness_forwards_the_extraction_variables(self, name):
