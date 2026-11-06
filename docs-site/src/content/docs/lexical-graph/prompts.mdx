@@ -26,13 +26,13 @@ The GraphRAG Toolkit uses a two-prompt architecture following LlamaIndex ChatPro
 - **Role**: Defines the AI's identity, expertise, and behavior
 - **Content**: Instructions on how to act (e.g., "You are an AWS security expert")
 - **Purpose**: Sets context, tone, and domain knowledge
-- **Variables**: No dynamic variables - static instructions
+- **Variables**: `{answer_mode}`, and `{boundary}` where the instructions name the tag around the search results
 
 **User Prompt:**
 - **Role**: Contains the actual task and dynamic content
 - **Content**: Task instructions with variable placeholders
 - **Purpose**: Processes input data and defines output format
-- **Variables**: `{query}`, `{search_results}`, `{additionalContext}`, `{aws_template_structure}`
+- **Variables**: `{query}`, `{search_results}`, `{additionalContext}`, `{aws_template_structure}`, and `{boundary}`, a hash of the search results to suffix the tags around them with (for example `<searchResults_{boundary}>`) so retrieved text cannot close them
 
 **Example Structure:**
 ```

@@ -10,14 +10,14 @@ from graphrag_toolkit.lexical_graph.utils import LLMCache, LLMCacheType
 from graphrag_toolkit.lexical_graph.indexing.model import Propositions
 from graphrag_toolkit.lexical_graph.indexing.extract.batch_extractor_base import BatchExtractorBase
 from graphrag_toolkit.lexical_graph.indexing.constants import PROPOSITIONS_KEY
-from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_PROPOSITIONS_PROMPT
+from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_PROPOSITIONS_PROMPT, EXTRACT_PROPOSITIONS_DATA
 from graphrag_toolkit.lexical_graph.indexing.extract.batch_config import BatchConfig
 from graphrag_toolkit.lexical_graph.indexing.extract.llm_proposition_extractor import LLMPropositionExtractor
 
 from graphrag_toolkit.lexical_graph.indexing.utils.batch_inference_utils import get_request_body
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args, data_prompt
 
 from llama_index.core.schema import TextNode
-from llama_index.core.prompts import PromptTemplate
 from llama_index.core.schema import NodeRelationship
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,10 @@ class BatchLLMPropositionExtractorSync(BatchExtractorBase):
         else:
             source_info = ''
         
-        messages = llm._get_messages(PromptTemplate(self.prompt_template), text=text, source_info=source_info)
+        messages = llm._get_messages(
+            data_prompt(self.prompt_template, EXTRACT_PROPOSITIONS_DATA),
+            **bounded_args('text', text=text, source_info=source_info)
+        )
         return {
             'recordId': node.node_id,
             'modelInput': get_request_body(llm, messages, inference_parameters)

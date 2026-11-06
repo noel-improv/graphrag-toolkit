@@ -916,3 +916,43 @@ class TestRecordsTheBatchJobReportsAsErrors:
         results = process()
 
         assert sorted(results) == [('r1', 'on demand'), ('r2', 'on demand'), ('r3', 'batch r3')]
+
+
+class TestARedoneRecordKeepsItsSystemPrompt:
+    """A failed record is redone on demand with the prompt it was sent with, system prompt included."""
+
+    @staticmethod
+    def _redo(tmp_path, model_input):
+        record = {'recordId': 'r1', 'modelInput': model_input,
+                  'error': {'errorCode': 500, 'errorMessage': 'boom', 'retryable': True}}
+        (tmp_path / 'in.jsonl.out').write_text(json.dumps(record) + '\n', encoding='utf-8')
+        llm = Mock()
+        llm.llm.model = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+        llm.predict.return_value = 'on demand'
+        assert list(process_batch_output_sync(str(tmp_path), 'in.jsonl', llm)) == [('r1', 'on demand')]
+        return llm.predict.call_args.args[0]
+
+    def test_a_claude_record_keeps_its_system_prompt(self, tmp_path):
+        prompt = self._redo(tmp_path, {
+            'system': 'Extract propositions.',
+            'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': '<text_b>\nAcme\n</text_b>'}]}],
+        })
+
+        messages = prompt.format_messages()
+        assert [(m.role, m.content) for m in messages] == [
+            (MessageRole.SYSTEM, 'Extract propositions.'),
+            (MessageRole.USER, '<text_b>\nAcme\n</text_b>'),
+        ]
+
+    def test_a_nova_record_keeps_its_system_prompt(self, tmp_path):
+        prompt = self._redo(tmp_path, {
+            'system': [{'text': 'Extract propositions.'}],
+            'messages': [{'role': 'user', 'content': [{'text': 'Acme'}]}],
+        })
+
+        assert [m.content for m in prompt.format_messages()] == ['Extract propositions.', 'Acme']
+
+    def test_a_record_without_a_system_prompt_is_redone_as_one_message(self, tmp_path):
+        prompt = self._redo(tmp_path, {'messages': [{'role': 'user', 'content': [{'text': 'Extract from Acme'}]}]})
+
+        assert prompt.format() == 'Extract from Acme'

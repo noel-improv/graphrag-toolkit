@@ -7,6 +7,7 @@ from graphrag_toolkit.lexical_graph.utils import LLMCache
 from graphrag_toolkit.lexical_graph.indexing import NodeHandler
 from graphrag_toolkit.lexical_graph.utils.io_utils import write_json
 from graphrag_toolkit.lexical_graph.retrieval.prompts import ANSWER_QUESTION_SYSTEM_PROMPT, ANSWER_QUESTION_USER_PROMPT
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args
 
 from llama_index.core import ChatPromptTemplate
 from llama_index.core.llms import ChatMessage, MessageRole
@@ -58,8 +59,7 @@ def to_response(search_results, query):
     try:
         response = llm.stream(
             prompt=chat_template,
-            query=query,
-            search_results=context,
+            **bounded_args('search_results', query=query, search_results=context),
             answer_mode='fully'
         )
         return StreamingResponse(
