@@ -26,6 +26,12 @@ from graphrag_toolkit.lexical_graph.storage.graph import MultiTenantGraphStore
 from graphrag_toolkit.lexical_graph.storage.vector import MultiTenantVectorStore, ReadOnlyVectorStore
 from graphrag_toolkit.lexical_graph.storage.vector import to_embedded_query
 from graphrag_toolkit.lexical_graph.prompts.prompt_provider_factory import PromptProviderFactory
+from graphrag_toolkit.lexical_graph.retrieval.prompts import (
+    ANSWER_QUESTION_SEARCH_RESULTS_PROMPT,
+    ANSWER_QUESTION_USER_PROMPT,
+    ANSWER_QUESTION_USER_PROMPT_WITHOUT_RESULTS,
+)
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args
 
 from llama_index.core import ChatPromptTemplate
 from llama_index.core.llms import ChatMessage, MessageRole
@@ -305,9 +311,17 @@ class LexicalGraphQueryEngine(BaseQueryEngine):
         if prompt_provider is None:
             prompt_provider = PromptProviderFactory.get_provider()
 
+        system_prompt = system_prompt or prompt_provider.get_system_prompt()
+        user_prompt = user_prompt or prompt_provider.get_user_prompt()
+        if '{search_results}' in system_prompt:
+            logger.warning('The system prompt carries {search_results} itself, so the search results are sent without hashed data tags')
+            if user_prompt.strip() == ANSWER_QUESTION_USER_PROMPT.strip():
+                user_prompt = ANSWER_QUESTION_USER_PROMPT_WITHOUT_RESULTS
+        elif '{search_results}' not in user_prompt:
+            user_prompt = ANSWER_QUESTION_SEARCH_RESULTS_PROMPT + user_prompt
         self.chat_template = ChatPromptTemplate(message_templates=[
-            ChatMessage(role=MessageRole.SYSTEM, content=system_prompt or prompt_provider.get_system_prompt()),
-            ChatMessage(role=MessageRole.USER, content=user_prompt or prompt_provider.get_user_prompt()),
+            ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
+            ChatMessage(role=MessageRole.USER, content=user_prompt),
         ])
 
         if retriever:
@@ -356,9 +370,12 @@ class LexicalGraphQueryEngine(BaseQueryEngine):
         try:
             response = self.llm.predict(
                 prompt=self.chat_template,
-                query=query_bundle.query_str,
-                search_results=search_results,
-                additionalContext='\n'.join(additional_context),
+                **bounded_args(
+                    'search_results',
+                    query=query_bundle.query_str,
+                    search_results=search_results,
+                    additionalContext='\n'.join(additional_context)
+                ),
                 answer_mode='fully' if self.verbose else 'concisely'
             )
             return response
@@ -376,9 +393,12 @@ class LexicalGraphQueryEngine(BaseQueryEngine):
         try:
             response = self.llm.stream(
                 prompt=self.chat_template,
-                query=query_bundle.query_str,
-                search_results=search_results,
-                additionalContext='\n'.join(additional_context)
+                **bounded_args(
+                    'search_results',
+                    query=query_bundle.query_str,
+                    search_results=search_results,
+                    additionalContext='\n'.join(additional_context)
+                )
             )
             return response
         except Exception:
