@@ -9,6 +9,7 @@ from graphrag_toolkit.lexical_graph.tenant_id import TenantIdType, to_tenant_id
 from graphrag_toolkit.lexical_graph.config import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.utils import LLMCache
 from graphrag_toolkit.lexical_graph.retrieval.prompts import ANSWER_QUESTION_SYSTEM_PROMPT, ANSWER_QUESTION_USER_PROMPT
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args
 from graphrag_toolkit.lexical_graph.storage.vector.vector_index import to_embedded_query
 from graphrag_toolkit.lexical_graph.storage.graph import MultiTenantGraphStore
 from graphrag_toolkit.lexical_graph.storage.vector import MultiTenantVectorStore, ReadOnlyVectorStore
@@ -123,8 +124,7 @@ class VectorQueryEngine(BaseQueryEngine):
         try:
             response = self.llm.predict(
                 prompt=self.chat_template,
-                query=query_bundle.query_str,
-                search_results=context,
+                **bounded_args('search_results', query=query_bundle.query_str, search_results=context),
                 answer_mode='fully'
             )
             return response
@@ -141,8 +141,7 @@ class VectorQueryEngine(BaseQueryEngine):
         try:
             response = self.llm.stream(
                 prompt=self.chat_template,
-                query=query_bundle.query_str,
-                search_results=context,
+                **bounded_args('search_results', query=query_bundle.query_str, search_results=context),
                 answer_mode='fully'
             )
             return response

@@ -8,7 +8,7 @@ from typing import Optional
 from graphrag_toolkit.lexical_graph import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.utils import LLMCache, LLMCacheType
 from graphrag_toolkit.lexical_graph.indexing.constants import TOPICS_KEY
-from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_TOPICS_PROMPT
+from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_TOPICS_PROMPT, EXTRACT_TOPICS_DATA
 from graphrag_toolkit.lexical_graph.indexing.extract.batch_config import BatchConfig
 from graphrag_toolkit.lexical_graph.indexing.extract.batch_extractor_base import BatchExtractorBase
 from graphrag_toolkit.lexical_graph.indexing.extract.topic_extractor import TopicExtractor
@@ -16,10 +16,10 @@ from graphrag_toolkit.lexical_graph.indexing.utils.topic_utils import parse_extr
 from graphrag_toolkit.lexical_graph.indexing.extract.preferred_values import PreferredValuesProvider, default_preferred_values
 
 from graphrag_toolkit.lexical_graph.indexing.utils.batch_inference_utils import get_request_body
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args, data_prompt
 
 from llama_index.core.bridge.pydantic import Field
 from llama_index.core.schema import TextNode
-from llama_index.core.prompts import PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +65,13 @@ class BatchTopicExtractorSync(BatchExtractorBase):
             else node.text
         )
         messages = llm._get_messages(
-            PromptTemplate(self.prompt_template), 
-            text=text,
-            preferred_entity_classifications=format_list(classifications),
-            preferred_topics=format_list(topics)
+            data_prompt(self.prompt_template, EXTRACT_TOPICS_DATA),
+            **bounded_args(
+                'text',
+                text=text,
+                preferred_entity_classifications=format_list(classifications),
+                preferred_topics=format_list(topics)
+            )
         )
         return {
             'recordId': node.node_id,

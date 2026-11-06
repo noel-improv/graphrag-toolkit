@@ -22,7 +22,7 @@ from llama_index.llms.bedrock_converse import BedrockConverse
 from llama_index.llms.anthropic.utils import blocks_to_anthropic_blocks
 from llama_index.llms.bedrock_converse.utils import messages_to_converse_messages
 from llama_index.core.schema import TextNode
-from llama_index.core.prompts import PromptTemplate
+from llama_index.core.prompts import ChatPromptTemplate, PromptTemplate
 from llama_index.core.base.llms.types import ChatMessage, MessageRole, TextBlock
 
 
@@ -466,6 +466,19 @@ def get_parse_output_text_fn(model_id:str):
         return _parse_output_text(json_data, provider.output_path, provider.output_mode)
     return parse_output
 
+def _failed_record_prompt(model_input:dict):
+    """The prompt a failed record was sent with: its first user message, under its system prompt if it had one."""
+    text = model_input.get('messages', [{}])[0].get('content', [{}])[0].get('text', '')
+    system = model_input.get('system')
+    if isinstance(system, list):
+        system = '\n'.join(block.get('text', '') for block in system)
+    if not system:
+        return PromptTemplate(text)
+    return ChatPromptTemplate(message_templates=[
+        ChatMessage(role=MessageRole.SYSTEM, content=system),
+        ChatMessage(role=MessageRole.USER, content=text),
+    ])
+
 def process_batch_output_sync(local_output_directory:str, input_filename:str, llm:LLMCache):
     
     success_count = 0
@@ -477,9 +490,9 @@ def process_batch_output_sync(local_output_directory:str, input_filename:str, ll
 
     logger.debug(f'[Batch outputs] Started processing all outputs for {input_filename}')
 
-    def process_failed_record(record_id, text, error):
+    def process_failed_record(record_id, prompt, error):
         try:
-            response = llm.predict(PromptTemplate(text))
+            response = llm.predict(prompt)
             return (record_id, response)
         except Exception as e:
             logger.error(f'[Batch outputs] Error processing failed record {record_id}: {str(e)} [original_error: {str(error)}]')
@@ -502,7 +515,7 @@ def process_batch_output_sync(local_output_directory:str, input_filename:str, ll
                         success_count += 1
                         yield (record_id, model_output_text)
                     else:
-                        error_records.append((record_id, json_data.get('modelInput', {}).get('messages', [{}])[0].get('content', [{}])[0].get('text', ''), error))
+                        error_records.append((record_id, _failed_record_prompt(json_data.get('modelInput', {})), error))
 
     if error_records:
         total_count = success_count + len(error_records)
@@ -518,8 +531,8 @@ def process_batch_output_sync(local_output_directory:str, input_filename:str, ll
             raise BatchJobError(f'Batch job failed every record [input_file: {input_filename}, {counts}] - {first_error_message}')
         logger.warning(f'[Batch outputs] Batch job failed records, processing them individually [input_file: {input_filename}, {counts}]')
 
-    for (record_id, text, error) in error_records:
-        (record_id, response) = process_failed_record(record_id, text, error)
+    for (record_id, prompt, error) in error_records:
+        (record_id, response) = process_failed_record(record_id, prompt, error)
         if response:
             success_count += 1
         else:
