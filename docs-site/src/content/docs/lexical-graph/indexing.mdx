@@ -364,9 +364,15 @@ The extract stage uses up to three LLM prompts:
 
 Using the `ExtractionConfig` and `InferClassificationsConfig` you can customize one or more of these prompts.
 
+The shipped prompts hold only instructions, and are sent as the system message. The chunk text and other data go in a separate user message, inside tags suffixed with a hash of the chunk text (for example `<text_3fa9c1d24e678f9c>`), so text in a document cannot close its own tag.
+
+<Aside type="caution" title="Custom prompts written before 3.21">
+  A custom prompt that includes the data placeholders described below, such as `{text}`, is sent as a single message as before, without the hashed tags. The toolkit raises a `UserWarning` and logs a warning the first time it sees such a prompt. To keep the protection, write a custom prompt as instructions only and leave the placeholders out.
+</Aside>
+
 **Domain entity classifications:**
 
-The prompt template should included a `{text_chunks}` placeholder, into which the sampled chunks will be inserted. 
+The sampled chunks are sent in the user message. A template written as a single message instead includes a `{text_chunks}` placeholder, into which the sampled chunks are inserted.
 
 The template should return classifications in the following format:
 
@@ -380,7 +386,7 @@ Classification3
 
 **Extract propositions:**
 
-The prompt template should include a `{text}` placeholder, into which the chunk text will be inserted. 
+The chunk text is sent in the user message. A template written as a single message instead includes a `{text}` placeholder, into which the chunk text is inserted.
 
 The template should return propositions in the following format:
 
@@ -392,7 +398,7 @@ proposition
 
 **Extract topics:**
 
-The prompt template should include a `{text}` placeholder, into which a set of propositions (or the raw chunk text) will be inserted, a `{preferred_topics}` placeholder, into which a list of topics will be inserted, and a `{preferred_entity_classifications}` placeholder, into which a liist of entity classifications will be inserted. 
+The propositions (or the raw chunk text), the preferred topics and the preferred entity classifications are sent in the user message. A template written as a single message instead includes `{text}`, `{preferred_topics}` and `{preferred_entity_classifications}` placeholders, into which they are inserted.
 
 The template should return extracted topics, statements, entities and relations in the following format:
 

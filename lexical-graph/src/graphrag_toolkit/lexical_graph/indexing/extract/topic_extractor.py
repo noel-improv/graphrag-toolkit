@@ -11,14 +11,14 @@ from graphrag_toolkit.lexical_graph.indexing.utils.topic_utils import parse_extr
 from graphrag_toolkit.lexical_graph.indexing.extract.preferred_values import PreferredValuesProvider, default_preferred_values
 from graphrag_toolkit.lexical_graph.indexing.model import TopicCollection
 from graphrag_toolkit.lexical_graph.indexing.constants import TOPICS_KEY
-from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_TOPICS_PROMPT
+from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_TOPICS_PROMPT, EXTRACT_TOPICS_DATA
 from graphrag_toolkit.lexical_graph.indexing.extract.progress import run_jobs_with_progress
 from graphrag_toolkit.lexical_graph.utils.arg_utils import coalesce
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args, data_prompt
 
 from llama_index.core.schema import BaseNode
 from llama_index.core.bridge.pydantic import Field
 from llama_index.core.extractors.interface import BaseExtractor
-from llama_index.core.prompts import PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -206,10 +206,13 @@ class TopicExtractor(BaseExtractor):
         """
         def blocking_llm_call():
             return self.llm.predict(
-                PromptTemplate(template=self.prompt_template),
-                text=text,
-                preferred_entity_classifications=format_list(preferred_entity_classifications),
-                preferred_topics=format_list(preferred_topics),
+                data_prompt(self.prompt_template, EXTRACT_TOPICS_DATA),
+                **bounded_args(
+                    'text',
+                    text=text,
+                    preferred_entity_classifications=format_list(preferred_entity_classifications),
+                    preferred_topics=format_list(preferred_topics)
+                ),
                 #exclude_cache_keys=['preferred_entity_classifications', 'preferred_topics']
             )
         

@@ -1,10 +1,18 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from typing import List, Dict, Optional
+from xml.sax.saxutils import escape
 
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+
+_UNSAFE_TAG_CHARS = re.compile(r'[^A-Za-z0-9_.-]')
+
+def _tag_name(key) -> str:
+    """A metadata key made safe to use as an XML tag name: anything outside letters, digits, `_`, `.` and `-` becomes `_`."""
+    return _UNSAFE_TAG_CHARS.sub('_', str(key)) or '_'
 
 class BedrockContextFormat(BaseNodePostprocessor):
     """
@@ -118,7 +126,7 @@ class BedrockContextFormat(BaseNodePostprocessor):
                 source_output.append(f"<source_{source_count}_metadata>")
                 metadata = source_nodes[0].node.metadata['source']['metadata']
                 for key, value in sorted(metadata.items()):
-                    source_output.append(f"\t<{key}>{value}</{key}>")
+                    source_output.append(f"\t<{_tag_name(key)}>{escape(str(value))}</{_tag_name(key)}>")
                 source_output.append(f"</source_{source_count}_metadata>")
             
             # Add statements
@@ -165,7 +173,7 @@ class BedrockContextFormat(BaseNodePostprocessor):
             if metadata:
                 out.append(f"<source_{source_count}_metadata>")
                 for key, value in sorted(metadata.items()):
-                    out.append(f"\t<{key}>{value}</{key}>")
+                    out.append(f"\t<{_tag_name(key)}>{escape(str(value))}</{_tag_name(key)}>")
                 out.append(f"</source_{source_count}_metadata>")
 
             for topic_count, topic in enumerate(result.get('topics', []), 1):

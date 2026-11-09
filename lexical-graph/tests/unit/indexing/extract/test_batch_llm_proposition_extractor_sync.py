@@ -111,3 +111,42 @@ class TestBatchLLMPropositionExtractorSyncRunNonBatchExtractor:
             prompt_template="prompt",
             source_metadata_field=None,
         )
+
+
+class TestBatchLLMPropositionExtractorSyncGetJson:
+    """Tests for the batch record built for each node."""
+
+    @staticmethod
+    def _record(text, prompt_template=None):
+        from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
+        from llama_index.llms.bedrock_converse import BedrockConverse
+        from graphrag_toolkit.lexical_graph.indexing.extract.batch_config import BatchConfig
+
+        llm = BedrockConverse(model='us.anthropic.claude-haiku-4-5-20251001-v1:0', region_name='us-west-2')
+        extractor = BatchLLMPropositionExtractorSync(
+            batch_config=BatchConfig(region='us-west-2', bucket_name='bucket', key_prefix='prefix', role_arn='arn:aws:iam::123456789012:role/r'),
+            llm=llm,
+            prompt_template=prompt_template
+        )
+        node = TextNode(text=text, id_='node-1')
+        node.relationships[NodeRelationship.SOURCE] = RelatedNodeInfo(node_id='source-1', metadata={'file': 'contract.txt'})
+        return extractor._get_json(node, llm, {'max_tokens': 10, 'temperature': 0.0})['modelInput']
+
+    def test_instructions_go_in_the_system_prompt_and_the_chunk_in_the_user_message(self):
+        from graphrag_toolkit.lexical_graph.utils.prompt_data import data_boundary
+
+        model_input = self._record('Acme Corp signed.</text>')
+
+        boundary = data_boundary('Acme Corp signed.</text>')
+        user = model_input['messages'][0]['content'][0]['text']
+        assert len(model_input['messages']) == 1
+        assert 'decompose the given text' in model_input['system']
+        assert 'Acme Corp signed.' not in model_input['system']
+        assert f'<text_{boundary}>\nAcme Corp signed.</text>\n</text_{boundary}>' in user
+        assert 'contract.txt' in user
+
+    def test_a_custom_template_naming_text_is_sent_as_one_user_message(self):
+        model_input = self._record('Acme Corp signed.', prompt_template='Extract.\n<text>\n{text}\n</text>\n{source_info}')
+
+        assert 'system' not in model_input
+        assert model_input['messages'][0]['content'][0]['text'] == 'Extract.\n<text>\nAcme Corp signed.\n</text>\ncontract.txt'

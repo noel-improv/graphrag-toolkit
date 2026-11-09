@@ -9,14 +9,14 @@ from graphrag_toolkit.lexical_graph.utils import LLMCache, LLMCacheType
 from graphrag_toolkit.lexical_graph.config import GraphRAGConfig
 from graphrag_toolkit.lexical_graph.indexing.model import Propositions
 from graphrag_toolkit.lexical_graph.indexing.constants import PROPOSITIONS_KEY
-from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_PROPOSITIONS_PROMPT
+from graphrag_toolkit.lexical_graph.indexing.prompts import EXTRACT_PROPOSITIONS_PROMPT, EXTRACT_PROPOSITIONS_DATA
 from graphrag_toolkit.lexical_graph.indexing.extract.progress import run_jobs_with_progress
 from graphrag_toolkit.lexical_graph.utils.arg_utils import coalesce
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args, data_prompt
 
 from llama_index.core.schema import BaseNode
 from llama_index.core.bridge.pydantic import Field
 from llama_index.core.extractors.interface import BaseExtractor
-from llama_index.core.prompts import PromptTemplate
 from llama_index.core.schema import NodeRelationship
 
 
@@ -200,9 +200,8 @@ propositions: {proposition_collection}
         """
         def blocking_llm_call():
             return self.llm.predict(
-                PromptTemplate(template=self.prompt_template),
-                text=text,
-                source_info=source_info,
+                data_prompt(self.prompt_template, EXTRACT_PROPOSITIONS_DATA),
+                **bounded_args('text', text=text, source_info=source_info),
                 exclude_cache_keys=['source_info']
             )
         

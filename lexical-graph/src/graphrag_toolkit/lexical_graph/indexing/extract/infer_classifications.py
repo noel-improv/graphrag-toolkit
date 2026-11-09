@@ -11,14 +11,15 @@ from graphrag_toolkit.lexical_graph.utils import LLMCache, LLMCacheType
 from graphrag_toolkit.lexical_graph.indexing.extract.source_doc_parser import SourceDocParser
 from graphrag_toolkit.lexical_graph.indexing.extract.preferred_values import PreferredValuesProvider
 from graphrag_toolkit.lexical_graph.indexing.constants import DEFAULT_ENTITY_CLASSIFICATIONS
-from graphrag_toolkit.lexical_graph.indexing.prompts import DOMAIN_ENTITY_CLASSIFICATIONS_PROMPT
-from graphrag_toolkit.lexical_graph.indexing.prompts import RANK_ENTITY_CLASSIFICATIONS_PROMPT
+from graphrag_toolkit.lexical_graph.indexing.prompts import DOMAIN_ENTITY_CLASSIFICATIONS_PROMPT, DOMAIN_ENTITY_CLASSIFICATIONS_DATA
+from graphrag_toolkit.lexical_graph.indexing.prompts import RANK_ENTITY_CLASSIFICATIONS_PROMPT, RANK_ENTITY_CLASSIFICATIONS_DATA
 from graphrag_toolkit.lexical_graph.utils.arg_utils import coalesce
+from graphrag_toolkit.lexical_graph.utils.prompt_data import bounded_args, data_boundary, data_prompt, without_boundary
 
 from llama_index.core.schema import BaseNode
+from llama_index.core.prompts import PromptTemplate
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.bridge.pydantic import Field
-from llama_index.core.prompts import PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -138,13 +139,26 @@ class InferClassifications(SourceDocParser, PreferredValuesProvider):
 
             logger.info(f'Analyzing {len(sample_chunks)} chunks for domain adaptation [iteration: {i}]')
 
-            formatted_chunks = '\n'.join(f'<chunk>{chunk.text}</chunk>' for chunk in sample_chunks)
-                
-            response = self.llm.predict(
-                PromptTemplate(self.prompt_template),
-                text_chunks=formatted_chunks,
-                existing_classifications='\n'.join(self.default_classifications)
-            )
+            prompt = data_prompt(self.prompt_template, DOMAIN_ENTITY_CLASSIFICATIONS_DATA)
+            existing_classifications = '\n'.join(self.default_classifications)
+
+            if isinstance(prompt, PromptTemplate):
+                response = self.llm.predict(
+                    prompt,
+                    text_chunks='\n'.join(f'<chunk>{chunk.text}</chunk>' for chunk in sample_chunks),
+                    existing_classifications=existing_classifications
+                )
+            else:
+                boundary = data_boundary('\n'.join(chunk.text for chunk in sample_chunks))
+                response = self.llm.predict(
+                    prompt,
+                    text_chunks='\n'.join(
+                        f'<chunk_{boundary}>{without_boundary(chunk.text, boundary)}</chunk_{boundary}>'
+                        for chunk in sample_chunks
+                    ),
+                    existing_classifications=without_boundary(existing_classifications, boundary),
+                    boundary=boundary
+                )
 
             classifications.update(self._parse_classifications(response))
 
@@ -154,8 +168,8 @@ class InferClassifications(SourceDocParser, PreferredValuesProvider):
             
             formatted_classifications = '\n'.join([c.title() for c in all_classifications])
             response = self.llm.predict(
-                PromptTemplate(self.rank_prompt_template),
-                classifications=formatted_classifications
+                data_prompt(self.rank_prompt_template, RANK_ENTITY_CLASSIFICATIONS_DATA),
+                **bounded_args('classifications', classifications=formatted_classifications)
             )
             ranked_classifications = self._parse_classifications(response)[:self.num_classifications]
 
